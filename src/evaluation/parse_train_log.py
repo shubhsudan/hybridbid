@@ -32,17 +32,19 @@ def parse_log(log_path: str):
         sys.exit(1)
 
     # ─── regex patterns ────────────────────────────────────────────────────
-    # Match lines like:
-    #   step 300000 | ep 1234 | reward  45.23 | alpha  0.1234 | critic_loss  1.23 | ...
-    # Also match simpler key=value patterns
-    step_re = re.compile(r'step\s+(\d+)', re.IGNORECASE)
-    alpha_re = re.compile(r'alpha[_\s]+([0-9eE+\-.]+)', re.IGNORECASE)
-    critic_re = re.compile(r'critic_loss[_\s:]+([0-9eE+\-.]+)', re.IGNORECASE)
-    grad_c_re = re.compile(r'grad_c[_\s:]+([0-9eE+\-.]+)', re.IGNORECASE)
-    nan_re = re.compile(r'nan|inf|nan_detected|nan_guard|explod', re.IGNORECASE)
-    reward_re = re.compile(r'reward[_\s:]+([0-9eE+\-\.]+)', re.IGNORECASE)
-    actor_re = re.compile(r'actor_loss[_\s:]+([0-9eE+\-\.]+)', re.IGNORECASE)
-    grad_a_re = re.compile(r'grad_a[_\s:]+([0-9eE+\-\.]+)', re.IGNORECASE)
+    # Log format:
+    #   Step  50000/1000000 | ep=576 | critic=1.6814 | actor=-22.9588 |
+    #   alpha=0.1423 | avg_reward=-8.9 | avg_soc=3.92 |
+    #   grad_c=13.092 [q1=...] | grad_a=0.642 | ...
+    step_re = re.compile(r'Step\s+(\d+)/', re.IGNORECASE)
+    alpha_re = re.compile(r'\balpha=([0-9eE+\-.]+)')
+    critic_re = re.compile(r'\bcritic=([0-9eE+\-.]+)')
+    grad_c_re = re.compile(r'\bgrad_c=([0-9eE+\-.]+)')
+    nan_re = re.compile(r'nan|inf(?!o)|nan_detected|nan_guard|explod', re.IGNORECASE)
+    reward_re = re.compile(r'\bavg_reward=([0-9eE+\-\.]+)')
+    actor_re = re.compile(r'\bactor=([0-9eE+\-\.]+)')
+    grad_a_re = re.compile(r'\bgrad_a=([0-9eE+\-\.]+)')
+    soc_re = re.compile(r'\bavg_soc=([0-9eE+\-\.]+)')
 
     records = []   # list of dicts, one per logged step
     nan_events = []
@@ -75,6 +77,7 @@ def parse_log(log_path: str):
                 (reward_re, "reward"),
                 (actor_re, "actor_loss"),
                 (grad_a_re, "grad_a"),
+                (soc_re, "avg_soc"),
             ]:
                 m = pattern.search(line)
                 if m:
@@ -90,6 +93,7 @@ def parse_log(log_path: str):
 
 
 def print_window(label: str, lo: int, hi: int, records: list):
+    # Records are logged every 1000 steps; match on range
     subset = [r for r in records if lo <= r.get("step", -1) <= hi]
     if not subset:
         print(f"\n  [no records found in {lo}–{hi}]")
@@ -98,18 +102,19 @@ def print_window(label: str, lo: int, hi: int, records: list):
     print(f"\n{'─'*72}")
     print(f"  {label}  (steps {lo:,} – {hi:,})")
     print(f"{'─'*72}")
-    hdr = f"  {'step':>8}  {'alpha':>8}  {'critic_loss':>12}  {'grad_c':>8}  {'reward':>8}  {'actor_loss':>11}  {'grad_a':>8}"
+    hdr = f"  {'step':>8}  {'alpha':>8}  {'critic':>10}  {'grad_c':>8}  {'avg_rew':>9}  {'actor':>9}  {'grad_a':>8}  {'avg_soc':>7}"
     print(hdr)
-    print(f"  {'─'*8}  {'─'*8}  {'─'*12}  {'─'*8}  {'─'*8}  {'─'*11}  {'─'*8}")
+    print(f"  {'─'*8}  {'─'*8}  {'─'*10}  {'─'*8}  {'─'*9}  {'─'*9}  {'─'*8}  {'─'*7}")
     for r in subset:
-        step = r.get("step", "?")
-        alpha = f"{r['alpha']:.5f}" if "alpha" in r else "       ?"
-        cl    = f"{r['critic_loss']:.4f}" if "critic_loss" in r else "           ?"
-        gc    = f"{r['grad_c']:.4f}" if "grad_c" in r else "       ?"
-        rw    = f"{r['reward']:.3f}" if "reward" in r else "       ?"
-        al    = f"{r['actor_loss']:.4f}" if "actor_loss" in r else "          ?"
-        ga    = f"{r['grad_a']:.4f}" if "grad_a" in r else "       ?"
-        print(f"  {step:>8}  {alpha:>8}  {cl:>12}  {gc:>8}  {rw:>8}  {al:>11}  {ga:>8}")
+        step  = r.get("step", "?")
+        alpha = f"{r['alpha']:.5f}"        if "alpha"       in r else "       ?"
+        cl    = f"{r['critic_loss']:.4f}"  if "critic_loss" in r else "         ?"
+        gc    = f"{r['grad_c']:.4f}"       if "grad_c"      in r else "       ?"
+        rw    = f"{r['reward']:.2f}"       if "reward"      in r else "        ?"
+        al    = f"{r['actor_loss']:.4f}"   if "actor_loss"  in r else "        ?"
+        ga    = f"{r['grad_a']:.4f}"       if "grad_a"      in r else "       ?"
+        sc    = f"{r['avg_soc']:.2f}"      if "avg_soc"     in r else "      ?"
+        print(f"  {step:>8}  {alpha:>8}  {cl:>10}  {gc:>8}  {rw:>9}  {al:>9}  {ga:>8}  {sc:>7}")
 
 
 def main(log_path: str):
@@ -142,17 +147,18 @@ def main(log_path: str):
     print(f"  Alpha at 25k-step checkpoints")
     print(f"{'='*72}")
     milestones = list(range(25_000, 1_025_000, 25_000))
-    print(f"  {'step':>8}  {'alpha':>10}  {'reward':>10}  {'critic_loss':>12}")
-    print(f"  {'─'*8}  {'─'*10}  {'─'*10}  {'─'*12}")
+    print(f"  {'step':>8}  {'alpha':>10}  {'avg_reward':>10}  {'critic':>12}  {'avg_soc':>7}")
+    print(f"  {'─'*8}  {'─'*10}  {'─'*10}  {'─'*12}  {'─'*7}")
     for ms in milestones:
-        # find closest record within ±2000 steps
-        near = [r for r in records if abs(r.get("step", -1e9) - ms) <= 2000]
+        # find closest record within ±1500 steps
+        near = [r for r in records if abs(r.get("step", -1e9) - ms) <= 1500]
         if near:
             r = min(near, key=lambda x: abs(x.get("step", 0) - ms))
-            a = f"{r['alpha']:.6f}" if "alpha" in r else "         ?"
-            rw = f"{r['reward']:.3f}" if "reward" in r else "         ?"
+            a  = f"{r['alpha']:.6f}"      if "alpha"       in r else "         ?"
+            rw = f"{r['reward']:.2f}"     if "reward"      in r else "         ?"
             cl = f"{r['critic_loss']:.4f}" if "critic_loss" in r else "           ?"
-            print(f"  {ms:>8}  {a:>10}  {rw:>10}  {cl:>12}")
+            sc = f"{r['avg_soc']:.2f}"    if "avg_soc"     in r else "    ?"
+            print(f"  {ms:>8}  {a:>10}  {rw:>10}  {cl:>12}  {sc:>6}")
         else:
             print(f"  {ms:>8}  {'(no record)':>10}")
 
