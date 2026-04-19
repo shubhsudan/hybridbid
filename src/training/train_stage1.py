@@ -27,21 +27,29 @@ def symlog(x: float) -> float:
 
 from src.env.ercot_env import ERCOTBatteryEnv
 from src.models.sac import SACAgent
-from src.training.config import Stage1Config, Stage1V60Config
+from src.training.config import Stage1Config, Stage1V60Config, Stage1V592Config
 
 
 def train_stage1(config: Stage1Config = None, enriched_obs: bool = False):
     if config is None:
         config = Stage1Config()
 
-    version = "v6.0" if enriched_obs else "v5.9"
+    if isinstance(config, Stage1V592Config):
+        version = "v5.9.2"
+    elif enriched_obs:
+        version = "v6.0"
+    else:
+        version = "v5.9"
     print(f"=== Stage 1: Energy-Only Training ({version}) ===")
     print(f"Data: {config.train_start} to {config.train_end}")
     print(f"Device: {config.device}")
     print(f"Total steps: {config.total_steps}")
-    print(f"Max grad norm: {config.max_grad_norm}")
+    print(f"Max grad norm: actor/ttfe={config.max_grad_norm} "
+          f"critic={getattr(config, 'max_grad_norm_critic', None) or config.max_grad_norm}")
     print(f"LR: actor={config.lr_actor} critic={config.lr_critic} ttfe={config.lr_ttfe}")
     print(f"τ_gumbel: {config.tau_gumbel_init} → {config.tau_gumbel_final}")
+    print(f"Alpha bounds: [0.05, {getattr(config, 'alpha_max', 'inf')}]  "
+          f"idle_logit_bonus={getattr(config, 'idle_logit_bonus', 0.0)}")
     if enriched_obs:
         n_prices_flat = getattr(config, "n_prices_flat", config.n_prices)
         obs_dim = config.d_model + n_prices_flat + config.static_dim
@@ -84,6 +92,9 @@ def train_stage1(config: Stage1Config = None, enriched_obs: bool = False):
         buffer_capacity=config.buffer_capacity,
         batch_size=config.batch_size,
         max_grad_norm=config.max_grad_norm,
+        max_grad_norm_critic=getattr(config, "max_grad_norm_critic", None),
+        alpha_max=getattr(config, "alpha_max", float("inf")),
+        idle_logit_bonus=getattr(config, "idle_logit_bonus", 0.0),
         tau_gumbel=config.tau_gumbel_init,
     )
 
@@ -227,6 +238,11 @@ def train_stage1(config: Stage1Config = None, enriched_obs: bool = False):
                 feat_str = (f" | pct24h={avg_pct:.2f} z24h={avg_z:.2f}"
                             f" da_rt={avg_basis:.4f}")
 
+            # Batch-level mode distribution (from policy, not env execution)
+            b_ch = metrics.get('mode_probs_ch', 0) * 100
+            b_dc = metrics.get('mode_probs_dc', 0) * 100
+            b_id = metrics.get('mode_probs_id', 0) * 100
+
             print(
                 f"Step {step:>7d}/{config.total_steps} | "
                 f"ep={episode_count} | "
@@ -236,12 +252,16 @@ def train_stage1(config: Stage1Config = None, enriched_obs: bool = False):
                 f"avg_reward={avg_reward:.1f} | "
                 f"avg_raw_reward={avg_raw_reward:.1f} | "
                 f"avg_soc={avg_soc:.2f} | "
-                f"grad_c={metrics.get('critic_grad_norm', 0):.3f} "
+                f"grad_c={metrics.get('grad_c_pre_clip', metrics.get('critic_grad_norm', 0)):.3f}"
+                f"→{metrics.get('grad_c_post_clip', metrics.get('critic_grad_norm', 0)):.3f} "
                 f"[q1={metrics.get('grad_q1', 0):.1f} q2={metrics.get('grad_q2', 0):.1f}] | "
-                f"grad_a={metrics.get('actor_grad_norm', 0):.3f} | "
+                f"grad_a={metrics.get('grad_a_pre_clip', metrics.get('actor_grad_norm', 0)):.3f}"
+                f"→{metrics.get('grad_a_post_clip', metrics.get('actor_grad_norm', 0)):.3f} | "
                 f"grad_t={metrics.get('ttfe_grad_norm', 0):.3f} "
                 f"[proj={metrics.get('grad_ttfe_proj', 0):.1f} attn={metrics.get('grad_ttfe_attn', 0):.1f}] | "
-                f"mode=[ch={mode_pct_charge:.0f}% dc={mode_pct_discharge:.0f}% id={mode_pct_idle:.0f}%] | "
+                f"q_mean={metrics.get('q_mean', 0):.2f} q_maxabs={metrics.get('q_max_abs', 0):.1f} | "
+                f"mode_env=[ch={mode_pct_charge:.0f}% dc={mode_pct_discharge:.0f}% id={mode_pct_idle:.0f}%] "
+                f"mode_batch=[ch={b_ch:.0f}% dc={b_dc:.0f}% id={b_id:.0f}%] | "
                 f"tau_g={gumbel_temperature:.3f} | "
                 f"{steps_per_sec:.1f} steps/s{feat_str}{nan_flag}",
                 flush=True,
@@ -299,9 +319,19 @@ if __name__ == "__main__":
         "--v60", action="store_true",
         help="Stage 1 v6.0: enriched obs (36-dim TTFE + 18 engineered features, obs_dim=108)"
     )
+    parser.add_argument(
+        "--v592", action="store_true",
+        help="Stage 1 v5.9.2: stability fixes (lr_critic=1e-4, critic_clip=0.5, "
+             "alpha_max=0.5, idle_logit_bonus=0.1). 500k validation run."
+    )
     args = parser.parse_args()
 
-    config = Stage1V60Config() if args.v60 else Stage1Config()
+    if args.v592:
+        config = Stage1V592Config()
+    elif args.v60:
+        config = Stage1V60Config()
+    else:
+        config = Stage1Config()
     if args.steps is not None:
         config.total_steps = args.steps
     if args.start is not None:

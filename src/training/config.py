@@ -41,6 +41,16 @@ class TrainConfig:
 
     # Gradient clipping (not in paper, kept as numerical safety)
     max_grad_norm: float = 1.0
+    # Separate critic clip (v5.9.2+). None = use max_grad_norm for critic too.
+    max_grad_norm_critic: float = None  # type: ignore[assignment]
+
+    # Alpha entropy temperature bounds (v5.9.2+)
+    # alpha_max=inf means no upper clamp (original behavior).
+    alpha_max: float = float("inf")
+
+    # Idle logit bonus (v5.9.2+): additive offset on idle mode logit before
+    # Gumbel-Softmax to prevent zero-idle collapse. 0.0 = off.
+    idle_logit_bonus: float = 0.0
 
     # Gumbel-Softmax temperature annealing
     tau_gumbel_init: float = 1.0   # start temperature
@@ -101,6 +111,31 @@ class Stage1V60Config(Stage1Config):
     static_dim: int = 32      # 14 orig + 18 engineered price features
     checkpoint_dir: str = "checkpoints/stage1_v60"
     save_every: int = 50_000  # checkpoints every 50k (same granularity as v5.9)
+
+
+@dataclass
+class Stage1V592Config(Stage1Config):
+    """Stage 1 v5.9.2: four targeted stability fixes, 500k validation run.
+
+    Diagnosed root cause from v5.9.1: critic gradients chronically at 50–300
+    (clipped every step) caused unstable Q-values, which drove alpha to oscillate
+    wildly (0.12 → 0.42 → 0.14 over 50k steps), causing mode flips and zero-idle
+    collapse.
+
+    Fixes applied:
+      1. lr_critic 3e-4 → 1e-4: tame Q-gradient overload at the source.
+      2. max_grad_norm_critic 1.0 → 0.5: tighter per-component critic clip.
+      3. alpha_max 0.5: prevent spike-and-crash cycles (v5.9.1 hit 0.42 and collapsed).
+      4. idle_logit_bonus 0.1: additive idle logit bonus to prevent zero-idle collapse.
+
+    Budget: 500k steps (validation). Extend to 1M if trajectory is clean.
+    """
+    lr_critic: float = 1e-4
+    max_grad_norm_critic: float = 0.5
+    alpha_max: float = 0.5
+    idle_logit_bonus: float = 0.1
+    total_steps: int = 500_000
+    checkpoint_dir: str = "checkpoints/stage1_v592"
 
 
 @dataclass

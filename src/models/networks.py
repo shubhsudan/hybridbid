@@ -89,7 +89,8 @@ class Actor(nn.Module):
 
         return mode_logits, energy_mag_mean, energy_mag_log_std
 
-    def sample(self, obs: torch.Tensor, tau: float = 1.0, hard: bool = False):
+    def sample(self, obs: torch.Tensor, tau: float = 1.0, hard: bool = False,
+               idle_logit_bonus: float = 0.0):
         """
         Sample action via Gumbel-Softmax (mode) + reparameterization (magnitudes).
 
@@ -99,6 +100,10 @@ class Actor(nn.Module):
             Gumbel-Softmax temperature. Start at 1.0, anneal toward 0.1.
         hard : bool
             If True, use straight-through hard one-hot (for deterministic eval).
+        idle_logit_bonus : float
+            Additive offset on the idle logit (index 2) before Gumbel-Softmax.
+            Prevents zero-idle collapse without materially changing a healthy policy.
+            0.0 = off (v5.9.1 default). 0.1 = v5.9.2 default.
 
         Returns
         -------
@@ -110,6 +115,14 @@ class Actor(nn.Module):
         mode_logits = outputs[0]
         energy_mag_mean = outputs[1]
         energy_mag_log_std = outputs[2]
+
+        # Apply idle logit bonus (v5.9.2+): small additive offset on idle class
+        # to prevent zero-idle degenerate collapse. Affects both the sampled mode
+        # and the log_prob (via mode_probs below), so entropy accounting is correct.
+        if idle_logit_bonus != 0.0:
+            bonus = torch.zeros_like(mode_logits)
+            bonus[:, MODE_IDLE] = idle_logit_bonus
+            mode_logits = mode_logits + bonus
 
         # --- Mode: Gumbel-Softmax ---
         mode_sample = F.gumbel_softmax(mode_logits, tau=tau, hard=hard)  # (batch, 3)

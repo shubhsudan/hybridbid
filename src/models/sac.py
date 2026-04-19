@@ -69,6 +69,9 @@ class SACAgent:
         buffer_capacity: int = None,
         batch_size: int = None,
         max_grad_norm: float = 1.0,
+        max_grad_norm_critic: float = None,
+        alpha_max: float = float("inf"),
+        idle_logit_bonus: float = 0.0,
         tau_gumbel: float = 1.0,
     ):
         self.stage = stage
@@ -76,6 +79,11 @@ class SACAgent:
         self.gamma = gamma
         self.tau = tau
         self.max_grad_norm = max_grad_norm
+        # Critic uses a separate (tighter) clip in v5.9.2+. Falls back to
+        # max_grad_norm when not specified (preserves v5.9.1 behavior).
+        self.max_grad_norm_critic = max_grad_norm_critic if max_grad_norm_critic is not None else max_grad_norm
+        self.alpha_max = alpha_max
+        self.idle_logit_bonus = idle_logit_bonus
         self.tau_gumbel = tau_gumbel
 
         # Action dimensions
@@ -181,9 +189,11 @@ class SACAgent:
         encoded = self._encode_obs(ph, sf)
 
         if deterministic:
-            _, _, action = self.actor.sample(encoded, tau=self.tau_gumbel, hard=True)
+            _, _, action = self.actor.sample(encoded, tau=self.tau_gumbel, hard=True,
+                                             idle_logit_bonus=self.idle_logit_bonus)
         else:
-            action, _, _ = self.actor.sample(encoded, tau=self.tau_gumbel, hard=False)
+            action, _, _ = self.actor.sample(encoded, tau=self.tau_gumbel, hard=False,
+                                             idle_logit_bonus=self.idle_logit_bonus)
 
         self.ttfe.train()
         self.actor.train()
@@ -237,7 +247,8 @@ class SACAgent:
         # --- Critic update ---
         with torch.no_grad():
             next_actions, next_log_probs, _ = self.actor.sample(
-                next_obs_encoded, tau=tau_gumbel, hard=False
+                next_obs_encoded, tau=tau_gumbel, hard=False,
+                idle_logit_bonus=self.idle_logit_bonus,
             )
             q1_target, q2_target = self.critic_target(next_obs_encoded, next_actions)
             q_target = torch.min(q1_target, q2_target) - self.alpha * next_log_probs
@@ -253,9 +264,12 @@ class SACAgent:
         # Per-component grad norms (pre-clip)
         grad_q1 = _grad_norm(self.critic.q1.parameters())
         grad_q2 = _grad_norm(self.critic.q2.parameters())
+        # v5.9.2+: separate (tighter) critic clip; falls back to max_grad_norm in v5.9.1.
         critic_grad_norm = nn.utils.clip_grad_norm_(
-            self.critic.parameters(), self.max_grad_norm
+            self.critic.parameters(), self.max_grad_norm_critic
         )
+        grad_c_pre_clip = critic_grad_norm.item()   # clip_grad_norm_ returns pre-clip norm
+        grad_c_post_clip = min(grad_c_pre_clip, self.max_grad_norm_critic)
         self.critic_optimizer.step()
 
         # NaN check: critic
@@ -271,11 +285,17 @@ class SACAgent:
         # Actor gradient to TTFE is small (~0.5-1.4 norm, observed) and does not
         # scale with Q-value magnitude.
         new_actions, log_probs, _ = self.actor.sample(
-            obs_encoded, tau=tau_gumbel, hard=False
+            obs_encoded, tau=tau_gumbel, hard=False,
+            idle_logit_bonus=self.idle_logit_bonus,
         )
+        # Mode distribution across the batch (Gumbel-soft samples ≈ policy probs).
+        mode_probs_mean = new_actions[:, :3].mean(dim=0).detach().cpu().tolist()
+
         # Detach obs before critic so critic state weights don't amplify TTFE grad.
         q1_new, q2_new = self.critic(obs_encoded.detach(), new_actions)
         q_new = torch.min(q1_new, q2_new)
+        q_value_mean = q_new.mean().item()
+        q_value_max_abs = q_new.abs().max().item()
         actor_loss = (self.alpha * log_probs - q_new).mean()
 
         self.actor_optimizer.zero_grad()
@@ -284,6 +304,8 @@ class SACAgent:
         actor_grad_norm = nn.utils.clip_grad_norm_(
             self.actor.parameters(), self.max_grad_norm
         )
+        grad_a_pre_clip = actor_grad_norm.item()
+        grad_a_post_clip = min(grad_a_pre_clip, self.max_grad_norm)
         grad_ttfe_proj = _grad_norm(
             [self.ttfe.input_proj.weight, self.ttfe.input_proj.bias, self.ttfe.pos_embedding]
         )
@@ -314,11 +336,14 @@ class SACAgent:
         self.alpha_optimizer.zero_grad()
         alpha_loss.backward()
         self.alpha_optimizer.step()
-        # Floor: prevent alpha from collapsing below 0.05 (insurance for Stage 2's
-        # 9D action space where corrected target_entropy=5.0 should self-regulate,
-        # but log_probs can still spike during early AS head learning).
+        # Clamp log_alpha to [log(0.05), log(alpha_max)].
+        # Floor (0.05): prevents alpha collapse in Stage 2's 9D action space.
+        # Ceiling (alpha_max): v5.9.2+ prevents spike-and-crash cycles where
+        # alpha hit 0.42 in v5.9.1 then overcorrected to 0.14 causing mode collapse.
+        # alpha_max=inf (default) preserves original v5.9.1 behavior.
         with torch.no_grad():
-            self.log_alpha.clamp_(min=float(np.log(0.05)))  # log(0.05) ≈ -2.996
+            log_alpha_max = float(np.log(self.alpha_max)) if self.alpha_max != float("inf") else float("inf")
+            self.log_alpha.clamp_(min=float(np.log(0.05)), max=log_alpha_max)
 
         # --- Soft update target networks ---
         self._soft_update()
@@ -328,14 +353,25 @@ class SACAgent:
             "actor_loss": actor_loss.item(),
             "alpha_loss": alpha_loss.item(),
             "alpha": self.alpha.item(),
-            "q_mean": q_new.mean().item(),
-            "critic_grad_norm": critic_grad_norm.item(),
-            "actor_grad_norm": actor_grad_norm.item(),
+            "q_mean": q_value_mean,
+            "q_max_abs": q_value_max_abs,
+            # Critic gradient norms (pre/post clip, v5.9.2+)
+            "critic_grad_norm": grad_c_pre_clip,  # kept for log compat (pre-clip)
+            "grad_c_pre_clip": grad_c_pre_clip,
+            "grad_c_post_clip": grad_c_post_clip,
+            # Actor/TTFE gradient norms
+            "actor_grad_norm": grad_a_pre_clip,   # kept for log compat (pre-clip)
+            "grad_a_pre_clip": grad_a_pre_clip,
+            "grad_a_post_clip": grad_a_post_clip,
             "ttfe_grad_norm": ttfe_grad_norm.item(),
             "grad_q1": grad_q1,
             "grad_q2": grad_q2,
             "grad_ttfe_proj": grad_ttfe_proj,
             "grad_ttfe_attn": grad_ttfe_attn,
+            # Mode distribution across training batch (charge/discharge/idle)
+            "mode_probs_ch": mode_probs_mean[0],
+            "mode_probs_dc": mode_probs_mean[1],
+            "mode_probs_id": mode_probs_mean[2],
         }
 
     def _soft_update(self):
