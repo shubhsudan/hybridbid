@@ -1,0 +1,14 @@
+Post-break MILP trajectory — train
+==================================================
+n_days: 68
+n_transitions: 19584
+total_revenue_usd: 111519.25
+energy_revenue_usd: 92288.27
+as_revenue_usd: 19230.98
+daily_avg_total: 1639.99
+daily_avg_energy: 1357.18
+daily_avg_as: 282.81
+annualized_per_kw: 59.86
+n_solver_failures: 1
+mean_solve_s: 9.6999
+max_solve_s: 600.2235
