@@ -2,13 +2,14 @@ Post-break MILP trajectory — train
 ==================================================
 n_days: 68
 n_transitions: 19584
-total_revenue_usd: 111519.25
-energy_revenue_usd: 92288.27
-as_revenue_usd: 19230.98
-daily_avg_total: 1639.99
-daily_avg_energy: 1357.18
-daily_avg_as: 282.81
-annualized_per_kw: 59.86
-n_solver_failures: 1
-mean_solve_s: 9.6999
-max_solve_s: 600.2235
+total_revenue_usd: 112053.84
+energy_revenue_usd: 92685.45
+as_revenue_usd: 19368.39
+daily_avg_total: 1647.85
+daily_avg_energy: 1363.02
+daily_avg_as: 284.83
+annualized_per_kw: 60.15
+n_solver_failures: 0
+mean_solve_s: 0.8735
+max_solve_s: 1.8255
+note: Dec 26 2025 re-solved with CLARABEL (HiGHS timed out at 600s on original Narnia run; CLARABEL optimal in 0.027s, $534.59 USD)

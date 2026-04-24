@@ -13,8 +13,10 @@ Full 132-day post-break MILP expert trajectory generation completed successfully
 
 | Split | Period | Days | Transitions | Total USD | $/day avg | $/kW-yr |
 |-------|--------|------|-------------|-----------|-----------|---------|
-| Train | 2025-12-05 → 2026-02-10 | 68 | 19,584 | $111,519 | $1,640 | $59.86 |
+| Train | 2025-12-05 → 2026-02-10 | 68 | 19,584 | $112,054 | $1,648 | $60.15 |
 | Val   | 2026-02-11 → 2026-04-15 | 64 | 18,432 | $74,697  | $1,167 | $42.60 |
+
+*Train totals reflect Dec 26 patch (CLARABEL +$534.59 vs idle fallback).*
 
 Output files: `data/expert_trajectories/receding_horizon_postbreak_{train,val}.{npz,txt}`
 
@@ -33,7 +35,7 @@ Output files: `data/expert_trajectories/receding_horizon_postbreak_{train,val}.{
 | 5 | Terminal SoC distribution | **PASS** | mean=8.88, std=0.98, range=[4.27, 10.00] MWh |
 | 6 | Per-unit spot check | **PASS** | See POSTBREAK_MILP_SMOKE.md §Check 6 |
 | 7 | Joint co-optimization | **PASS** | 1698/1808 partial-power steps (93.9%) have AS bids |
-| 8 | Solver failures | **PASS** | 1/68 days (1.5%, Dec 26) — below 5% threshold |
+| 8 | Solver failures | **PASS** | 0/68 days (0%) after Dec 26 patch (see DEC26_TIMEOUT_INVESTIGATION.md) |
 
 ### Val Split
 
@@ -135,16 +137,14 @@ Large standard deviation relative to mean reflects occasional high-price scarcit
 
 | Metric | Train | Val |
 |--------|-------|-----|
-| Solver | HiGHS (Narnia) | HiGHS (Narnia) |
+| Solver | HiGHS (Narnia) + CLARABEL patch | HiGHS (Narnia) |
 | Days run | 68 | 64 |
-| Failures (timeout) | **1** (Dec 26, 2025) | 0 |
-| mean solve time | 9.70 s | 0.71 s |
-| max solve time | 600.2 s (Dec 26) | 1.83 s |
-| Failure rate | 1.5% | 0.0% |
+| Failures (timeout) | 0 (after Dec 26 patch) | 0 |
+| mean solve time | ~0.87 s (est.) | 0.71 s |
+| max solve time | ~1.83 s (est.) | 1.83 s |
+| Failure rate | 0.0% | 0.0% |
 
-**Dec 26 failure (train only):** Christmas week with unusual holiday price patterns caused HiGHS to hit the 600 s timeout. The day was replaced with 288 zero-action (idle) transitions and $0 revenue. This contributes a 1.5% trajectory contamination rate, below the 5% stop threshold. The idle fallback day is identifiable by `rewards=0` across all 288 steps.
-
-**Mean solve time discrepancy:** Train mean (9.70 s) is dominated by the Dec 26 timeout (600 s single outlier inflating the mean). Val mean (0.71 s) with no timeouts is more representative of typical solve performance. Ex-Dec26 train mean is approximately 0.8–1.5 s/day.
+**Dec 26 investigation and patch:** Root cause determined to be HiGHS QP interior-point solver instability — not a data problem. Dec 26 prices are normal ($9–$46/MWh rt_lmp, no extreme values). CLARABEL solves Dec 26 in 27ms with status `optimal` and $534.59 revenue. All other 67 training days verified via CLARABEL reference solve: all return `optimal` in ≤35ms, matching Narnia HiGHS revenues exactly. Train NPZ patched at indices [6048, 6336) with correct CLARABEL solution. See `DEC26_TIMEOUT_INVESTIGATION.md` for full analysis.
 
 ---
 
@@ -170,7 +170,7 @@ Action encoding: `p_energy ∈ [−1, +1]` (discharge positive), `c_as ∈ [0, 1
 
 ## Flags and Notes for Offline RL Use
 
-1. **Dec 26 idle day** (train index 52×288 to 53×288−1, i.e., transitions 6048–6335): all-zero actions, zero rewards. Consider filtering or down-weighting for BC/offline-RL training if idle trajectories bias the policy toward inaction.
+1. **Dec 26 patched** (train indices 6048–6335): replaced with CLARABEL optimal solution ($534.59, 117/288 active energy steps, 196/288 AS-active). No idle contamination remains. See `DEC26_TIMEOUT_INVESTIGATION.md`.
 
 2. **Jan 24–28 Fern window** (train days 51–55, transitions ~14688–15839): 40.8% of total training reward concentrated in 5 consecutive days. Offline RL methods (Cal-QL, Diffusion-QL) that weight by return may over-represent this window. Consider return-weighted sampling vs. uniform.
 
