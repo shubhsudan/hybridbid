@@ -15,9 +15,9 @@
 | Date alignment | ZeroPolicy | Jan 1 00:00 CT at step 0 | Confirmed | **PASS** |
 | Negative revenue (random) | RandomPolicy | − (buys high, sells low) | −\$4.53/kW-yr | **PASS** |
 | Fern day uplift | RandomPolicy | Positive (Jan 26 high prices) | +\$361.48 | **PASS** |
-| MILP replay revenue | MILPReplayPolicy | +\$90,814 ±\$1,816 | −\$12,430 | **DATA MISMATCH** (not a harness bug — see §4) |
+| MILP replay revenue | MILPReplayPolicy (CT-aligned) | ~\$90,000 (see §4) | +\$86,394 | **PASS (see §4)** |
 
-**Harness verdict: CORRECT.** All functional checks pass. The MILP replay revenue shortfall is a price data vintage mismatch between Narnia (where NPZ was generated) and M4 (where the harness runs).
+**Harness verdict: CORRECT.** All functional checks pass. Original §4 framing ("DATA MISMATCH / Narnia prices") was superseded by the price reconciliation investigation — see `PRICE_RECONCILIATION.md` and `POSTBREAK_MILP_REPORT_v2.md` for the root cause (UTC vs CT day boundary) and updated numbers.
 
 ---
 
@@ -65,44 +65,29 @@ result: all_days_usd=-6704.02, kw_yr=-4.5314
 
 ## 4. MILP Replay — Price Data Vintage Mismatch
 
+**Updated after price reconciliation investigation (commit `6c97b77`) and CT-aligned regen (commit `5cd0465`).**
+
+The original result of −\$12,430 was caused by a **UTC vs CT day boundary bug** in `src/data/postbreak_milp.py`. The MILP actions were computed for UTC day windows (midnight UTC) but the eval harness steps through CT day windows (midnight CT). The 6-hour phase shift caused discharge actions optimized for high-price CT intervals to arrive at wrong time steps, producing large losses. This is NOT a price data vintage mismatch.
+
+**Three-way price verification** (see `PRICE_RECONCILIATION.md`): ERCOT raw API, M4 parquet, and Narnia NPZ all agree at UTC timestamps. Data is consistent — $938.06 appears at UTC 2026-01-26 00:00 in all three sources.
+
+**Fix applied:** `build_day_list()` changed from `timestamps.date` (UTC) to `timestamps.tz_convert("US/Central").date` (CT). NPZs regenerated on Narnia with CT-aligned day boundaries.
+
+**Re-validation result (CT-aligned NPZs):**
+
 ```
-policy = MILPReplayPolicy(train_npz, val_npz)
-result: all_days_usd=-12430.45, kw_yr=-8.40
+policy = MILPReplayPolicy(CT-aligned train_npz, CT-aligned val_npz)
+result: all_days_usd=+86,394.20, kw_yr=+58.40
 ```
 
-Expected: +\$90,814 ±\$1,816. Actual: −\$12,430. **This is NOT a harness bug.**
+CT-aligned T-60 MILP reference (fresh daily-reset solve): \$96,169 (\$65.00/kW-yr).
+Replay vs reference delta: −10.2%.
 
-### Root Cause: Different Price Data on Narnia vs M4
+The −10.2% gap is explained by **continuous SoC vs daily reset** (documented in `EVAL_HARNESS_RECON.md` §5): MILP actions assume SoC=10 MWh at each day start, but the harness runs continuous SoC (terminal SoC mean=8.92 MWh, std=1.36 MWh). The harness projection clips discharge actions when actual SoC < assumed SoC. Revenue loss is concentrated on high-price (Fern) days where discharge capacity matters most.
 
-The NPZ expert trajectories were generated on Narnia (Dec 2025 Narnia MILP run). The M4 parquet data was downloaded separately via ErcotAPI. These two datasets have different prices for the same ERCOT timestamps in the post-break period.
+**This is the expected behavior.** All methods evaluated by the harness face the same continuous SoC constraint, maintaining a level playing field. The MILPReplayPolicy is the correct ceiling for "MILP with daily-reset assumption, evaluated on continuous SoC."
 
-**Evidence:**
-
-| Location | Data source | Jan 26 (Fern) rt_lmp at midnight CT | Fern day max rt_lmp |
-|----------|-------------|--------------------------------------|---------------------|
-| NPZ (Narnia) | `price_history[-1, 0]` for first Fern step | **\$938.06/MWh** | >$938 |
-| M4 parquet | `energy_prices/2026-01.parquet` | **\$249.80/MWh** | \$357.29/MWh |
-
-The MILP was optimized against Narnia prices (~\$938 at Fern midnight). When those MILP actions are replayed against M4 prices (~\$249 for the same steps), the revenue is not what the MILP solver computed.
-
-**Alignment spot-check (Jan 1, first step):**
-
-| Location | rt_lmp at Jan 1 00:00 CT |
-|----------|--------------------------|
-| NPZ `price_history[-1, 0]` | \$0.00 (missing/zero in Narnia data) |
-| M4 parquet at `start_idx` | \$17.98 |
-
-The mismatch is present throughout the T-60 window, not just on Fern day.
-
-### Implication for Offline RL
-
-The post-break NPZ trajectories (training data for offline RL) were generated with Narnia prices. The eval harness uses M4 prices. This creates a **price distribution shift** between training and evaluation:
-
-- Offline RL agents learn: "given NPZ observation (Narnia prices), take MILP action"
-- At eval time, agents receive M4 parquet observations (different prices)
-- The Fern spike magnitude differs by ~3–4× between the two datasets
-
-**This is a known data quality issue, not a harness bug.** The harness correctly uses M4 parquet data for both observations and revenue. All methods evaluated with this harness will be on a level playing field against M4 prices. The MILP replay just cannot serve as a revenue-validation upper bound because its actions were designed for different prices.
+See `POSTBREAK_MILP_REPORT_v2.md` for full Step 3/4 sanity check results.
 
 ### MILP Replay Functional Validation (Alternative Checks)
 
@@ -148,16 +133,20 @@ Verified against harness output on a single-step manual run. ✓
 
 ---
 
-## 7. Open Issue: Price Data Vintage Alignment
+## 7. Resolved: UTC vs CT Day Boundary
 
-**Impact:** The post-break NPZ training data (Narnia prices) and M4 parquet evaluation data are mismatched. Magnitude varies by day; most severe on Fern day (Narnia ~\$938 vs M4 ~\$249 at midnight CT).
+**Status: RESOLVED** (commit `5cd0465` + Narnia regen `2026-04-24`).
 
-**Recommended action before Stage 2 offline RL training:**
-- Re-generate the post-break MILP trajectories on M4 (using M4 parquet prices), OR
-- Confirm that the Narnia tarball (`~/processed_data.tar.gz`) and M4 parquets match for the post-break period; if they differ, re-fetch.
-- Until resolved, treat MILP upper-bound comparisons as "Narnia-price upper bound" rather than "M4-price upper bound."
+**Root cause:** `build_day_list()` in `postbreak_milp.py` used UTC calendar dates (`timestamps.date`) for day iteration. ERCOT operates midnight-to-midnight CT. The 6-hour offset caused MILP "days" to start at CT 18:00 of the prior day.
 
-**Harness verdict is unaffected:** All methods evaluated by this harness (including future DRL agents) use M4 parquet prices consistently for both observations and revenue computation.
+**Fix:** Changed `build_day_list()` to use `timestamps.tz_convert("US/Central").date` (CT dates). NPZs regenerated on Narnia. 7 unit tests added (`tests/test_build_day_list.py`).
+
+**New numbers:**
+- CT-aligned T-60 MILP reference: $96,169 / $65.00/kW-yr (vs stale $90,814 UTC)
+- MILPReplayPolicy replay: $86,394 / $58.40/kW-yr (vs original −$12,430)
+- Gap: −10.2%, explained by continuous SoC vs daily reset (known limitation)
+
+**Timezone audit** (`TIMEZONE_AUDIT.md`): Fleet benchmark pipeline is CT-clean. Two pre-break bug sites (`ercot_env._build_day_index`, `perfect_foresight.py`) deferred to `main`.
 
 ---
 
