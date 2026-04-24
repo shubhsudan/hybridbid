@@ -121,9 +121,9 @@ SPLITS = {
 }
 SMOKE_DATES = [
     "2026-01-10",  # normal winter weekday
-    "2026-01-25",  # day before Fern
-    "2026-01-26",  # Winter Storm Fern
-    "2026-01-27",  # post-Fern
+    "2026-01-25",  # Winter Storm Fern — CT Jan 25 includes spike at 18:00 CT ($938.06)
+    "2026-01-26",  # post-Fern elevated day (sustained $357 range, CT Jan 26)
+    "2026-01-27",  # post-Fern tapering
     "2026-02-05",  # post-Fern, mid-validation boundary
 ]
 
@@ -344,10 +344,11 @@ def compute_step_reward(
 
 def process_day(args: tuple) -> dict:
     """
-    Run the full-day MILP for one UTC date and collect 288 transitions.
+    Run the full-day MILP for one Central Time operating day and collect 288 transitions.
 
     args = (date_str, day_start_global, price_data, system_data, timestamps, solver)
 
+    date_str is an ERCOT CT operating day (YYYY-MM-DD, midnight-to-midnight CT).
     price_data and system_data are slices covering:
       [day_start_global - SEQ_LEN + 1 : day_start_global + STEPS_PER_DAY + 1]
     local_day_start = SEQ_LEN - 1 (within the slice)
@@ -490,22 +491,26 @@ def process_day(args: tuple) -> dict:
 
 def build_day_list(merged: pd.DataFrame, start: str, end: str) -> list:
     """
-    Return a list of (date_str, global_start_idx) for complete UTC days
+    Return a list of (date_str, global_start_idx) for complete Central Time days
     within [start, end] that have enough lookback (>= SEQ_LEN rows before them).
+
+    date_str is an ERCOT CT operating day (YYYY-MM-DD, midnight-to-midnight CT).
+    Using CT dates ensures MILP day boundaries match ERCOT settlement days.
     """
-    start_ts = pd.Timestamp(start, tz="UTC")
-    end_ts   = pd.Timestamp(end,   tz="UTC") + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+    start_date = pd.Timestamp(start).date()
+    end_date   = pd.Timestamp(end).date()
 
     timestamps = merged.index
-    all_dates  = pd.Series(timestamps.date).unique()
+    timestamps_ct = timestamps.tz_convert("US/Central")
+    ct_dates = np.array([ts.date() for ts in timestamps_ct])
+    all_dates = pd.unique(ct_dates)
 
     days = []
     for d in sorted(all_dates):
-        date_ts = pd.Timestamp(d, tz="UTC")
-        if date_ts < start_ts or date_ts > end_ts:
+        if d < start_date or d > end_date:
             continue
-        mask     = timestamps.date == d
-        indices  = np.where(mask)[0]
+        mask      = ct_dates == d
+        indices   = np.where(mask)[0]
         if len(indices) < STEPS_PER_DAY:
             continue
         first_idx = indices[0]
@@ -610,15 +615,20 @@ def sanity_check(arrays: dict, diag: list, label: str) -> None:
     logger.info(f"[{status1}] 1. Revenue scale: ${ann_rev_per_kw:.1f}/kW-yr "
                 f"(total=${total_rev:.0f} over {n_days} days; target: $40-$200/kW-yr)")
 
-    # ── 2. Fern contribution (only if Jan 26 is in diag) ──
-    fern_diags = [d for d in diag if "2026-01-26" in d["date"]]
-    if fern_diags:
-        fern_rev = fern_diags[0]["total_rev"]
+    # ── 2. Fern contribution (CT Jan 25 = spike day, CT Jan 26 = elevated day) ──
+    # Fleet convention labels CT Jan 26 as "Fern" (sustained $357 range all day).
+    # CT Jan 25 carries the $938 spike at 18:00 CT. Both are checked when present.
+    fern25_diags = [d for d in diag if "2026-01-25" in d["date"]]
+    fern26_diags = [d for d in diag if "2026-01-26" in d["date"]]
+    if fern25_diags or fern26_diags:
+        fern_rev = (fern25_diags[0]["total_rev"] if fern25_diags else 0) + \
+                   (fern26_diags[0]["total_rev"] if fern26_diags else 0)
         fern_pct = fern_rev / max(total_rev, 1) * 100
         status2 = "OK" if 10 <= fern_pct <= 80 else "WARN"
-        logger.info(f"[{status2}] 2. Fern contribution: ${fern_rev:.0f} ({fern_pct:.1f}% of window revenue; target: 20-50%)")
+        logger.info(f"[{status2}] 2. Fern contribution (Jan 25+26): ${fern_rev:.0f} "
+                    f"({fern_pct:.1f}% of window revenue; target: 10-80%)")
     else:
-        logger.info("[SKIP] 2. Fern (Jan 26) not in this run")
+        logger.info("[SKIP] 2. Fern (Jan 25/26) not in this run")
 
     # ── 3. Action distributions ──
     logger.info("[ -- ] 3. Action distributions:")
