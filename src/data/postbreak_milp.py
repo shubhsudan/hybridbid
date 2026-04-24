@@ -750,7 +750,11 @@ def save_npz(arrays: dict, diag: list, out_path: Path, label: str) -> None:
 
 def select_solver() -> str:
     available = cp.installed_solvers()
-    for s in ("GUROBI", "HIGHS"):
+    # CLARABEL preferred over HiGHS: this problem is a QP (quadratic terminal
+    # penalty), and HiGHS's QP interior-point solver can stall on instances with
+    # sparse AS prices (see DEC26_TIMEOUT_INVESTIGATION.md). CLARABEL solves every
+    # training day in <35ms with certified optimal status.
+    for s in ("GUROBI", "CLARABEL", "HIGHS"):
         if s in available:
             return s
     raise RuntimeError(f"No suitable solver found. Available: {available}")
