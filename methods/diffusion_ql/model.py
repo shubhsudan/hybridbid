@@ -210,11 +210,12 @@ class DiffusionQL(nn.Module):
         return mu + self.posterior_variance[t_idx].sqrt() * noise
 
     def _clip_action(self, a: torch.Tensor) -> torch.Tensor:
-        """Clip to feasible p.u. range: energy∈[-1,1], AS∈[0,1]."""
-        a = a.clone()
-        a[:, 0:1] = torch.clamp(a[:, 0:1], -1.0, 1.0)
-        a[:, 1:]  = torch.clamp(a[:, 1:],   0.0, 1.0)
-        return a
+        """Clip to feasible p.u. range: energy∈[-1,1], AS∈[0,1].
+        Uses torch.cat (not in-place) so autograd graph stays valid."""
+        return torch.cat([
+            torch.clamp(a[:, 0:1], -1.0, 1.0),
+            torch.clamp(a[:, 1:],   0.0, 1.0),
+        ], dim=1)
 
     @torch.no_grad()
     def sample_action(self, obs: torch.Tensor) -> torch.Tensor:

@@ -80,7 +80,7 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
     ckpt_dir = Path(ROOT) / "checkpoints" / "sprint" / "dql"
     log_dir  = Path(ROOT) / "logs" / "sprint"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
+    log_dir.mkdir(parents=True, exist_ok=True)  # must be before FileHandler
 
     log_path = log_dir / f"dql_{mode}.log"
     fh = logging.FileHandler(log_path)
