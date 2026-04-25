@@ -105,15 +105,16 @@ Diffusion-QL is dropped from the six-method comparison table. Replaced with:
 
 This result is useful for the methodology section:
 
-> "Diffusion-QL (Wang et al. 2023) was applied but failed due to Q-value divergence on our  
-> 15k-transition dataset. Divergence occurred at steps 29k–31k under both β_Q=1.0 (paper  
-> default) and β_Q=0.5, suggesting a structural instability specific to small offline datasets  
+> "Diffusion-QL (Wang et al. 2023) was applied but exhibited Q-value divergence in our  
+> regime: 15k transitions, spike-dominated reward distribution (Winter Storm Fern, 35% of  
+> revenue from 0.2% of training steps). Divergence occurred at steps 29k–31k under both  
+> β_Q=1.0 (paper default) and β_Q=0.5, suggesting a structural instability in this regime  
 > rather than a hyperparameter sensitivity. The behavior cloning regularization in Diffusion-QL  
-> appears insufficient to stabilize Q-maximization with <20k transitions, consistent with the  
-> method's original evaluation on D4RL datasets with 100k–1M transitions. Datasets with  
-> high-variance, spike-dominated reward structures (here: Winter Storm Fern contributing 35%  
-> of revenue from 0.2% of training steps) may exacerbate this instability by producing  
-> isolated high-Q outliers that corrupt Bellman bootstrapping."
+> appears insufficient to anchor Q-maximization on datasets of this size and distributional  
+> character; isolated high-Q Fern transitions likely corrupt Bellman bootstrapping. We note  
+> that Diffusion-QL achieves strong results on D4RL datasets with 100k–1M transitions and  
+> approximately unimodal per-step reward; the limitations documented here are specific to the  
+> small-data, spike-dominated post-RTC+B BESS bidding regime."
 
 ---
 

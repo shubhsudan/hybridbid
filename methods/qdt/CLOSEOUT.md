@@ -131,32 +131,28 @@ QDT is dropped from the six-method comparison table. Final method slate:
 | 5 | QDT | **FAILURE** (RTG distribution shift) |
 | 6 | Li et al. TempDRL | Colleague scope |
 
-Both Methods 4 and 5 fail on the same root cause: methods that rely on Q-function estimation  
-(either for Q-maximization or Q-relabeling) are unstable on 15k-transition, spike-dominated  
-offline datasets.
-
-This motivates Cal-QL (Method 3) as the remaining RL contender: it uses a more conservative  
-offline-to-online formulation that may be more robust to Q-estimation instability. If Cal-QL  
-also fails, all three RL methods will have failed, and the comparison table will have 3  
-classical/behavioral baselines + 3 failures — itself a publishable finding.
+Both Methods 4 and 5 exhibit failures driven by Q-function estimation in our regime  
+(15k transitions, spike-dominated rewards). Whether this pattern extends to all Q-based  
+offline RL methods in this regime, or is specific to Q-maximization and Q-relabeling  
+architectures, remains an open question pending Cal-QL results.
 
 ---
 
 ## Publishable methodology paragraph
 
 > "QDT (Yamagata et al. 2023) was applied with two α_cql values (1.0 and 0.3). Both failed  
-> the Stage 2 hard gate (P50 relabeled RTG ∈ [-50, 100]). The α_cql=0.3 run produced  
-> substantially better Q_mean at the 50k checkpoint (102.9 vs. 4.69 for α=1.0), but P50 RTG  
-> improved only marginally (-127 vs. -141). The root cause is structural: our dataset's  
-> reward distribution is dominated by Winter Storm Fern (35% of revenue from 0.2% of  
-> training steps), creating a bimodal Q-value distribution regardless of CQL hyperparameters.  
-> The majority of (s,a) pairs receive negative Q-labels because routine non-event intervals  
-> have near-zero per-step reward under CQL conservatism, while a handful of Fern transitions  
-> receive Q-values of $1k–$11k. Conditioning the Decision Transformer on P90 = +$281 at  
-> inference while the median training RTG is -$127 constitutes an out-of-distribution  
-> extrapolation that the method cannot be expected to resolve. QDT requires approximately  
-> unimodal, positive Q-value distributions — a prerequisite not met by spike-dominated  
-> BESS revenue data."
+> the Stage 2 hard gate (P50 relabeled RTG ∈ [-50, 100]) in our regime: 15k transitions,  
+> spike-dominated rewards (Winter Storm Fern, 35% of revenue from 0.2% of training steps).  
+> The α_cql=0.3 run produced substantially better Q_mean at the 50k checkpoint (102.9 vs.  
+> 4.69 for α=1.0), but P50 RTG improved only marginally (-127 vs. -141), indicating the  
+> distribution shift is structural rather than a CQL tuning artifact. The reward distribution  
+> creates a bimodal Q-value distribution: a handful of Fern transitions with Q ∈ [$1k, $11k],  
+> and a majority of routine intervals with Q < 0 under CQL conservatism. Conditioning the  
+> Decision Transformer on P90 = +$281 at inference while the median training RTG is -$127  
+> constitutes an out-of-distribution extrapolation. We note that QDT achieves strong results  
+> on D4RL benchmarks with approximately unimodal reward distributions and 100k–1M transitions;  
+> the limitations documented here are specific to the small-data, spike-dominated post-RTC+B  
+> BESS bidding regime."
 
 ---
 
