@@ -1,0 +1,69 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 12.999235,
+    "val_loss": 11.444933
+  },
+  {
+    "epoch": 2,
+    "train_loss": 11.084341,
+    "val_loss": 10.954252
+  },
+  {
+    "epoch": 3,
+    "train_loss": 10.35918,
+    "val_loss": 10.345961
+  },
+  {
+    "epoch": 4,
+    "train_loss": 9.723882,
+    "val_loss": 9.896017
+  },
+  {
+    "epoch": 5,
+    "train_loss": 9.073304,
+    "val_loss": 9.409092,
+    "probe": {
+      "p_energy": {
+        "mean": -0.62,
+        "std": 3.031,
+        "frac_zero": 0.01
+      },
+      "c_regup": {
+        "mean": 1.92,
+        "std": 1.993,
+        "frac_zero": 0.19
+      },
+      "c_regdn": {
+        "mean": 2.279,
+        "std": 1.852,
+        "frac_zero": 0.06
+      },
+      "c_rrs": {
+        "mean": 0.106,
+        "std": 0.162,
+        "frac_zero": 0.66
+      },
+      "c_ecrs": {
+        "mean": 0.09,
+        "std": 0.136,
+        "frac_zero": 0.71
+      },
+      "c_nsrs": {
+        "mean": 1.929,
+        "std": 1.453,
+        "frac_zero": 0.08
+      }
+    },
+    "fern_slice": {
+      "n_steps": 2016,
+      "total_revenue_usd": 12681.26,
+      "daily_avg_revenue": 1811.61,
+      "annualized_kw_yr": 66.1237,
+      "energy_rev_usd": 9359.42,
+      "as_rev_usd": 3321.84,
+      "fern_day_rev_usd": 4553.03,
+      "soc_final_mwh": 6.451
+    }
+  }
+]
