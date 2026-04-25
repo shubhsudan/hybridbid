@@ -23,9 +23,10 @@ batch_size: 256
 # (n_random uniform + n_random from current policy = 2*n_random total)
 n_random_actions: 10
 
-# Actor entropy coefficient — 0.0: no SAC entropy; CQL conservatism provides the
-# regularization. Adding entropy would require tuning a second temperature.
-alpha_entropy: 0.0
+# Actor entropy coefficient — 0.1: minimum to prevent log_std saturation (LOG_STD_MIN=-20).
+# Smoke round 1 with 0.0 caused complete mode collapse (log_pi=198, p_energy=1.000±0.000).
+# 0.1 is conservative relative to SAC default (0.2); CQL still provides primary regularization.
+alpha_entropy: 0.1
 
 # Training budget
 total_steps: 50000
