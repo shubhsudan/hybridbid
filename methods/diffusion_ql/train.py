@@ -206,9 +206,9 @@ def _run_eval(model, device, step, data_dir, results_dir, mode):
         result = evaluate(policy, f"dql_{mode}_step{step}",
                           data_dir=data_dir, results_dir=results_dir)
         log.info(
-            f"[EVAL step={step}] all_days=${result['all_days']['per_kw_yr']:.2f}/kW-yr  "
-            f"ex_fern=${result['ex_fern']['per_kw_yr']:.2f}/kW-yr  "
-            f"fern=${result['fern_only']['per_kw_yr']:.2f}/kW-yr"
+            f"[EVAL step={step}] all_days=${result['all_days']['annualized_kw_yr']:.2f}/kW-yr  "
+            f"ex_fern=${result['ex_fern']['annualized_kw_yr']:.2f}/kW-yr  "
+            f"fern=${result['fern_only']['annualized_kw_yr']:.2f}/kW-yr"
         )
     except Exception as exc:
         log.warning(f"[EVAL step={step}] skipped: {exc}")
