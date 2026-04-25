@@ -68,6 +68,10 @@ class Actor(nn.Module):
         log_std = self.log_std_head(h).clamp(LOG_STD_MIN, LOG_STD_MAX)
         return mu, log_std
 
+    def forward_distribution(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Return pre-squash Gaussian parameters (mu, log_std) for entropy diagnostics."""
+        return self._forward_raw(obs)
+
     @staticmethod
     def _squash(z: torch.Tensor) -> torch.Tensor:
         """Map tanh output z ∈ (−1,1)^6 to mixed action p.u. space."""

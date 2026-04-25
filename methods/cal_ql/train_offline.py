@@ -83,42 +83,87 @@ def _action_stats_for_mask(act_arr: np.ndarray, mask: np.ndarray,
     return stats
 
 
-def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
-                device: torch.device, step: int) -> dict:
-    """
-    Lightweight val-NPZ eval: Q statistics and action distribution.
+def _write_diagnostics(step: int, eval_result: dict, cql_stats: dict,
+                       diag_dir: Path) -> Path:
+    """Write per-eval diagnostics JSON for H1/H2/H3 analysis at 25k checkpoint."""
+    dim_names = ["p_energy", "c_regup", "c_regdn", "c_rrs", "c_ecrs", "c_nsrs"]
+    act_stats = eval_result.get("action_stats", {})
+    neg_stats = eval_result.get("neg_vbeh_stats", {})
+    exp_slice = eval_result.get("expert_as_stats", {"size": 0})
 
-    Computes two action-distribution slices:
+    doc = {
+        "step": step,
+        "global": {
+            "action_mean_per_dim": [act_stats.get(n, {}).get("mean") for n in dim_names],
+            "action_std_per_dim":  [act_stats.get(n, {}).get("std")  for n in dim_names],
+            "frac_zero_per_dim":   [act_stats.get(n, {}).get("frac_zero") for n in dim_names],
+            "Q_mean":        eval_result.get("Q_mean"),
+            "Q_max":         eval_result.get("Q_max"),
+            "Q_p90":         eval_result.get("Q_p90"),
+            "mean_log_std":  eval_result.get("mean_log_std"),
+            "log_pi":        cql_stats.get("log_pi")        if cql_stats else None,
+            "cql_term_mean": cql_stats.get("cql_term_mean") if cql_stats else None,
+            "cql_term_min":  cql_stats.get("cql_term_min")  if cql_stats else None,
+            "cql_term_max":  cql_stats.get("cql_term_max")  if cql_stats else None,
+        },
+        "expert_as_active_slice": exp_slice,
+        "neg_v_beh_slice": {
+            "size": eval_result.get("neg_vbeh_n", 0),
+            "action_mean_per_dim": [neg_stats.get(n, {}).get("mean") for n in dim_names],
+            "action_std_per_dim":  [neg_stats.get(n, {}).get("std")  for n in dim_names],
+        },
+    }
+    diag_path = diag_dir / f"diagnostics_step{step}.json"
+    with open(diag_path, "w") as f:
+        json.dump(doc, f, indent=2)
+    log.info(f"[DIAG] Diagnostics written to {diag_path}")
+    return diag_path
+
+
+def eval_on_val(actor: Actor, twin_q: TwinQ, val_ds: PostbreakDatasetCalQL,
+                device: torch.device, step: int,
+                expert_as_active_idx: np.ndarray = None,
+                cql_stats: dict = None,
+                diag_dir: Path = None) -> dict:
+    """
+    Lightweight val-NPZ eval: Q statistics, action distribution, entropy health.
+
+    Computes three action-distribution slices:
       - Global (all val transitions)
-      - Negative-V_beh slice (val transitions where V_behavior < 0;
-        ~17% of train — QDT's failure zone without a calibration floor)
+      - Negative-V_beh slice (~17% of val — QDT failure zone without calibration floor)
+      - Expert-AS-active slice (val transitions where expert bid c_rrs or c_ecrs > 0)
+
+    Also computes mean_log_std (pre-squash) for entropy collapse detection.
 
     NOT the full T-60 harness (Karthik runs that separately after 50k).
     """
-    from methods.cal_ql.data_loader import PostbreakDatasetCalQL
-    val_ds = PostbreakDatasetCalQL(val_path, v_behavior_cache="", gamma=0.99)
-
-    all_q, all_act = [], []
+    all_q, all_act, all_log_std = [], [], []
     actor.eval()
     twin_q.eval()
 
+    N  = len(val_ds)
+    bs = 512
+
     with torch.no_grad():
-        bs = 512
-        N  = len(val_ds)
         for start in range(0, N, bs):
             end       = min(start + bs, N)
             obs_batch = val_ds.obs[start:end].to(device)
-            a_det     = actor.deterministic(obs_batch)   # (B, 6)
-            q_val     = twin_q.q_min(obs_batch, a_det)  # (B, 1)
+            a_det     = actor.deterministic(obs_batch)       # (B, 6)
+            q_val     = twin_q.q_min(obs_batch, a_det)      # (B, 1)
+            _, ls     = actor.forward_distribution(obs_batch)  # log_std (B, 6)
             all_q.append(q_val.cpu().numpy())
             all_act.append(a_det.cpu().numpy())
+            all_log_std.append(ls.cpu().numpy())
 
     actor.train()
     twin_q.train()
 
-    q_arr   = np.concatenate(all_q).squeeze()   # (N,)
-    act_arr = np.concatenate(all_act)            # (N, 6)
-    v_beh   = val_ds.v_beh.numpy()              # (N,)
+    q_arr       = np.concatenate(all_q).squeeze()    # (N,)
+    act_arr     = np.concatenate(all_act)             # (N, 6)
+    log_std_arr = np.concatenate(all_log_std)         # (N, 6)
+    v_beh       = val_ds.v_beh.numpy()               # (N,)
+
+    mean_log_std = float(log_std_arr.mean())
 
     dim_names = ["p_energy", "c_regup", "c_regdn", "c_rrs", "c_ecrs", "c_nsrs"]
 
@@ -132,25 +177,40 @@ def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
             "frac_zero": float((np.abs(col) < 1e-3).mean()),
         }
 
-    # Negative-V_beh slice — states where calibration floor provides no protection
-    neg_mask = v_beh < 0.0
+    # Negative-V_beh slice
+    neg_mask      = v_beh < 0.0
     neg_act_stats = _action_stats_for_mask(act_arr, neg_mask, dim_names)
 
+    # Expert-AS-active slice: policy actions on states where expert bid c_rrs|c_ecrs
+    expert_as_stats: dict = {"size": 0}
+    if expert_as_active_idx is not None and len(expert_as_active_idx) > 0:
+        as_q   = q_arr[expert_as_active_idx]
+        as_act = act_arr[expert_as_active_idx]
+        expert_as_stats = {
+            "size":   int(len(expert_as_active_idx)),
+            "Q_mean": float(as_q.mean()),
+            "Q_p90":  float(np.percentile(as_q, 90)),
+            "actor_action_mean_per_dim": [float(as_act[:, i].mean()) for i in range(6)],
+        }
+
     result = {
-        "step":    step,
-        "Q_mean":  float(q_arr.mean()),
-        "Q_max":   float(q_arr.max()),
-        "Q_min":   float(q_arr.min()),
-        "Q_p50":   float(np.percentile(q_arr, 50)),
-        "Q_p90":   float(np.percentile(q_arr, 90)),
-        "action_stats":     act_stats,
-        "neg_vbeh_stats":   neg_act_stats,
-        "neg_vbeh_n":       int(neg_mask.sum()),
-        "neg_vbeh_frac":    float(neg_mask.mean()),
+        "step":            step,
+        "Q_mean":          float(q_arr.mean()),
+        "Q_max":           float(q_arr.max()),
+        "Q_min":           float(q_arr.min()),
+        "Q_p50":           float(np.percentile(q_arr, 50)),
+        "Q_p90":           float(np.percentile(q_arr, 90)),
+        "mean_log_std":    mean_log_std,
+        "action_stats":    act_stats,
+        "neg_vbeh_stats":  neg_act_stats,
+        "neg_vbeh_n":      int(neg_mask.sum()),
+        "neg_vbeh_frac":   float(neg_mask.mean()),
+        "expert_as_stats": expert_as_stats,
     }
 
     log.info(f"[EVAL step={step}] Q_mean={result['Q_mean']:.2f}  Q_max={result['Q_max']:.2f}  "
-             f"Q_min={result['Q_min']:.2f}  Q_p50={result['Q_p50']:.2f}")
+             f"Q_min={result['Q_min']:.2f}  Q_p50={result['Q_p50']:.2f}  "
+             f"mean_log_std={mean_log_std:.3f}")
     log.info(f"[EVAL step={step}] Global action distribution (p.u.):")
     for name, s in act_stats.items():
         log.info(f"  {name}: mean={s['mean']:.3f}  std={s['std']:.3f}  "
@@ -160,6 +220,13 @@ def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
     for name, s in neg_act_stats.items():
         log.info(f"  {name}: mean={s['mean']:.3f}  std={s['std']:.3f}  "
                  f"frac_zero={s['frac_zero']:.3f}")
+    if expert_as_stats["size"] > 0:
+        log.info(f"[EVAL step={step}] Expert-AS-active slice ({expert_as_stats['size']} states):"
+                 f"  Q_mean={expert_as_stats['Q_mean']:.2f}  Q_p90={expert_as_stats['Q_p90']:.2f}"
+                 f"  actor_means={[f'{v:.3f}' for v in expert_as_stats['actor_action_mean_per_dim']]}")
+
+    if diag_dir is not None:
+        _write_diagnostics(step, result, cql_stats or {}, diag_dir)
 
     return result
 
@@ -169,9 +236,10 @@ def check_kill_criteria(metrics: dict, q_max_smoke: float, cfg: dict, step: int)
     Returns True if a kill criterion is met.
     Kill criteria for 25k–50k continuation (checked every eval_every).
     """
-    q_max_now  = metrics["Q_max"]
-    q_mean_now = metrics["Q_mean"]
-    cql_term   = metrics.get("cql_term_last", 0.0)
+    q_max_now    = metrics["Q_max"]
+    q_mean_now   = metrics["Q_mean"]
+    cql_term     = metrics.get("cql_term_last", 0.0)
+    mean_log_std = metrics.get("mean_log_std", 0.0)
 
     killed = False
 
@@ -192,6 +260,11 @@ def check_kill_criteria(metrics: dict, q_max_smoke: float, cfg: dict, step: int)
                   f"{cfg['kill_cql_term_max']}. Calibration mechanism broken. Exiting.")
         killed = True
 
+    if mean_log_std < -10.0:
+        log.error(f"[KILL] Step {step}: mean_log_std={mean_log_std:.3f} < -10.0. "
+                  f"Actor entropy collapse (log_std saturation). Exiting.")
+        killed = True
+
     return killed
 
 
@@ -210,15 +283,24 @@ def save_checkpoint(step: int, actor: Actor, twin_q: TwinQ, twin_q_tgt: TwinQ,
 
 
 def train(mode: str, gpu: int, train_path: str, val_path: str,
-          v_beh_cache: str, resume_ckpt: str = ""):
+          v_beh_cache: str, resume_ckpt: str = "",
+          override_total_steps: int = 0, override_eval_every: int = 0):
 
     cfg    = load_cfg()
     device = torch.device(f"cuda:{gpu}" if torch.cuda.is_available() else "cpu")
     log.info(f"Device: {device}  mode={mode}  resume={resume_ckpt or 'none'}")
     log.info(f"Config: {cfg}")
 
+    if override_total_steps > 0:
+        cfg["total_steps"] = override_total_steps
+        log.info(f"[OVERRIDE] total_steps → {override_total_steps}")
+    if override_eval_every > 0:
+        cfg["eval_every"] = override_eval_every
+        log.info(f"[OVERRIDE] eval_every → {override_eval_every}")
+
     ckpt_dir = Path(ROOT) / "checkpoints" / "sprint" / "cal_ql"
     log_dir  = Path(ROOT) / "logs" / "sprint"
+    diag_dir = Path(ROOT) / "methods" / "cal_ql"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -229,6 +311,24 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
 
     # ── Build model and agent ────────────────────────────────────────────────
     actor, twin_q, twin_q_tgt, agent = build_agent(cfg, device)
+
+    # ── Pre-load val dataset once; compute expert AS-active slice ────────────
+    val_ds = PostbreakDatasetCalQL(val_path, v_behavior_cache="", gamma=0.99)
+    val_act_np = val_ds.act.numpy()  # (N_val, 6)
+    expert_as_active_idx = np.where(
+        (val_act_np[:, 3] > 1e-3) | (val_act_np[:, 4] > 1e-3)
+    )[0]
+    log.info(f"[SETUP] Expert AS-active slice (c_rrs|c_ecrs > 0): "
+             f"{len(expert_as_active_idx)} transitions "
+             f"({len(expert_as_active_idx)/len(val_ds)*100:.1f}% of val)")
+    if len(expert_as_active_idx) < 100:
+        expert_as_active_idx = np.where(
+            (val_act_np[:, 1] > 1e-3) | (val_act_np[:, 2] > 1e-3) |
+            (val_act_np[:, 3] > 1e-3) | (val_act_np[:, 4] > 1e-3) |
+            (val_act_np[:, 5] > 1e-3)
+        )[0]
+        log.warning(f"[SETUP] Expert AS-active (c_rrs/c_ecrs only) slice < 100; "
+                    f"widened to all non-zero AS: {len(expert_as_active_idx)} transitions")
 
     start_step  = 0
     q_max_smoke = 0.0   # set after smoke eval, used for kill threshold in full run
@@ -245,7 +345,7 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
         log.info(f"Resumed from {resume_ckpt} at step {start_step}  "
                  f"Q_max_smoke={q_max_smoke:.1f}")
 
-    n_steps = cfg["smoke_steps"] if mode == "smoke" else cfg["total_steps"]
+    n_steps   = cfg["smoke_steps"] if mode == "smoke" else cfg["total_steps"]
     data_iter = make_infinite_loader(train_path, v_beh_cache, cfg["batch_size"], cfg["gamma"])
 
     # ── Training metrics accumulators ────────────────────────────────────────
@@ -305,7 +405,19 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
 
         # ── Periodic eval (every eval_every) ──────────────────────────────────
         if step % cfg["eval_every"] == 0 or (mode == "smoke" and step == cfg["smoke_steps"]):
-            eval_result = eval_on_val(actor, twin_q, val_path, device, step)
+            # Build cql_stats from recent buffer for diagnostics JSON
+            window = metric_buf["cql_term"][-500:] if metric_buf["cql_term"] else [0.0]
+            cql_stats = {
+                "cql_term_mean": float(np.mean(window)),
+                "cql_term_min":  float(np.min(window)),
+                "cql_term_max":  float(np.max(window)),
+                "log_pi":        float(np.mean(metric_buf["log_pi"][-500:])) if metric_buf["log_pi"] else 0.0,
+            }
+
+            eval_result = eval_on_val(actor, twin_q, val_ds, device, step,
+                                      expert_as_active_idx=expert_as_active_idx,
+                                      cql_stats=cql_stats,
+                                      diag_dir=diag_dir)
             eval_result["cql_term_last"] = cql_term_last
 
             if mode == "smoke" and step == cfg["smoke_steps"]:
@@ -313,10 +425,10 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
                 log.info(f"[SMOKE] Q_max_smoke={q_max_smoke:.2f}  "
                          f"Q_mean={eval_result['Q_mean']:.2f}")
 
-            elif mode == "full" and start_step > 0 and q_max_smoke > 0:
-                # Kill criteria — only active for full run after smoke
+            elif mode == "full":
+                # Kill criteria — active for full run (q_max_smoke guard only when smoke was run)
                 if check_kill_criteria(eval_result, q_max_smoke, cfg, step):
-                    diag_path = ckpt_dir / f"diagnostics_step{step}.json"
+                    diag_path = ckpt_dir / f"kill_diagnostics_step{step}.json"
                     with open(diag_path, "w") as f:
                         json.dump({**eval_result,
                                    "q_max_smoke": q_max_smoke,
@@ -324,12 +436,23 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
                                    "metric_history": {k: metric_buf[k][-100:]
                                                       for k in metric_buf}},
                                   f, indent=2)
-                    log.error(f"[KILL] Diagnostics written to {diag_path}")
+                    log.error(f"[KILL] Kill diagnostics written to {diag_path}")
                     sys.exit(1)
 
         # ── Sprint checkpoint: sys.exit(0) at checkpoint_step ─────────────────
         if mode == "full" and step == cfg["checkpoint_step"]:
-            eval_result = eval_on_val(actor, twin_q, val_path, device, step)
+            # Final checkpoint eval (may duplicate a periodic eval — that's intentional)
+            cql_window = metric_buf["cql_term"][-500:] if metric_buf["cql_term"] else [0.0]
+            cql_stats_ckpt = {
+                "cql_term_mean": float(np.mean(cql_window)),
+                "cql_term_min":  float(np.min(cql_window)),
+                "cql_term_max":  float(np.max(cql_window)),
+                "log_pi":        float(np.mean(metric_buf["log_pi"][-500:])) if metric_buf["log_pi"] else 0.0,
+            }
+            eval_result = eval_on_val(actor, twin_q, val_ds, device, step,
+                                      expert_as_active_idx=expert_as_active_idx,
+                                      cql_stats=cql_stats_ckpt,
+                                      diag_dir=diag_dir)
             q_max_at_ckpt = eval_result["Q_max"]
             ckpt_path = save_checkpoint(step, actor, twin_q, twin_q_tgt, agent, ckpt_dir)
 
@@ -340,12 +463,14 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
 
             log.info(f"[CHECKPOINT] Step {step}: checkpoint saved to {ckpt_path}")
             log.info(f"[CHECKPOINT] Q_mean={eval_result['Q_mean']:.2f}  "
-                     f"Q_max={q_max_at_ckpt:.2f}  Q_p50={eval_result['Q_p50']:.2f}")
+                     f"Q_max={q_max_at_ckpt:.2f}  Q_p50={eval_result['Q_p50']:.2f}  "
+                     f"mean_log_std={eval_result['mean_log_std']:.3f}")
             log.info(f"[CHECKPOINT] Q_max_smoke (from smoke run): {q_max_smoke:.2f}")
             if q_max_smoke > 0:
                 ratio = q_max_at_ckpt / max(q_max_smoke, 1)
                 log.info(f"[CHECKPOINT] Q_max ratio vs smoke: {ratio:.2f}×  "
-                         f"(kill threshold: {cfg['kill_q_max_multiplier']}×)")
+                         f"(inspect threshold: {cfg['kill_q_max_multiplier']}×, "
+                         f"firm kill: $50,000)")
             log.info("[CHECKPOINT] Halting for Karthik's review. "
                      "Re-launch with --mode full --resume <path> to continue.")
             sys.exit(0)
@@ -358,8 +483,18 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
         log.info(f"Projected full (50k steps): {wall_time / cfg['smoke_steps'] * 50_000 / 3600:.2f}h")
 
         # Final eval for smoke results
-        eval_result = eval_on_val(actor, twin_q, val_path, device, cfg["smoke_steps"])
-        q_max_smoke = eval_result["Q_max"]
+        cql_window = metric_buf["cql_term"][-500:] if metric_buf["cql_term"] else [0.0]
+        cql_stats_smoke = {
+            "cql_term_mean": float(np.mean(cql_window)),
+            "cql_term_min":  float(np.min(cql_window)),
+            "cql_term_max":  float(np.max(cql_window)),
+            "log_pi":        float(np.mean(metric_buf["log_pi"][-500:])) if metric_buf["log_pi"] else 0.0,
+        }
+        eval_result = eval_on_val(actor, twin_q, val_ds, device, cfg["smoke_steps"],
+                                  expert_as_active_idx=expert_as_active_idx,
+                                  cql_stats=cql_stats_smoke,
+                                  diag_dir=diag_dir)
+        q_max_smoke  = eval_result["Q_max"]
         q_mean_smoke = eval_result["Q_mean"]
 
         # Save smoke checkpoint
@@ -384,10 +519,10 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
     """Write SMOKE_RESULTS.md for Karthik's review."""
     results_path = Path(ROOT) / "methods" / "cal_ql" / "SMOKE_RESULTS.md"
 
-    act_stats     = eval_result.get("action_stats", {})
+    act_stats      = eval_result.get("action_stats", {})
     neg_vbeh_stats = eval_result.get("neg_vbeh_stats", {})
-    neg_vbeh_n    = eval_result.get("neg_vbeh_n", 0)
-    neg_vbeh_frac = eval_result.get("neg_vbeh_frac", 0.0)
+    neg_vbeh_n     = eval_result.get("neg_vbeh_n", 0)
+    neg_vbeh_frac  = eval_result.get("neg_vbeh_frac", 0.0)
 
     # Pass/fail checks
     q_max  = eval_result["Q_max"]
@@ -411,9 +546,6 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
     smoke_pass = all([q_bounded, q_positive, cql_bounded, action_ok])
 
     # ── Adaptive kill threshold recommendation (Karthik's guidance) ──────────
-    # V_beh max = $11,952. A correctly-learning Q must reach that range for Fern
-    # states. Q_max_smoke in $8–15k = spike states engaged; 4× is reasonable.
-    # Q_max_smoke < $3k = 4× would false-positive on legitimate Fern learning.
     if q_max >= 8_000:
         thresh_rec  = f"**4× = {q_max * 4:.0f}** (spike states engaged; 4× is a safe divergence signal)"
         thresh_mode = "4x"
@@ -520,6 +652,10 @@ def main():
     ap.add_argument("--val-path",   default="data/expert_trajectories/receding_horizon_postbreak_val.npz")
     ap.add_argument("--v-beh-cache", default="data/cal_ql/V_behavior.npy")
     ap.add_argument("--resume",  default="", help="Checkpoint to resume from (full mode only)")
+    ap.add_argument("--total-steps", type=int, default=0,
+                    help="Override total_steps from config (0 = use config value)")
+    ap.add_argument("--eval-every",  type=int, default=0,
+                    help="Override eval_every from config (0 = use config value)")
     args = ap.parse_args()
 
     log.info(f"Cal-QL offline training: mode={args.mode}  gpu={args.gpu}")
@@ -530,6 +666,8 @@ def main():
         val_path=args.val_path,
         v_beh_cache=args.v_beh_cache,
         resume_ckpt=args.resume,
+        override_total_steps=args.total_steps,
+        override_eval_every=args.eval_every,
     )
 
 
