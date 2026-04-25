@@ -185,14 +185,22 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
     log.info(f"Saved: {ckpt_path}")
 
     # ── Strengthened smoke checks ─────────────────────────────────────────────
+    # Flag usage by stage (for traceability):
+    #   done       (always 0.0) — Q-learning terminal flag; never zeros bootstrap (no terminal states)
+    #   sarsa_done (truncated|last_idx, 69 positions) — zeros γ·Q(s',a') in Bellman target HERE only
+    #   truncated  (68 CT-midnight positions) — used by SequenceDataset to validate DT context windows
     q_vals   = q1.detach().cpu().numpy().flatten()
     cql_val  = cql_loss.item()
     td_val   = td_loss.item()
 
-    log.info(f"[SMOKE Stage1] Q distribution: mean={q_vals.mean():.2f}  "
-             f"std={q_vals.std():.2f}  min={q_vals.min():.2f}  max={q_vals.max():.2f}  "
-             f"P10={np.percentile(q_vals,10):.2f}  P50={np.percentile(q_vals,50):.2f}  "
-             f"P90={np.percentile(q_vals,90):.2f}")
+    log.info(f"[SMOKE Stage1] Q distribution (per-transition critic Q-values on last batch):")
+    log.info(f"  mean={q_vals.mean():.2f}  std={q_vals.std():.2f}  "
+             f"min={q_vals.min():.2f}  P10={np.percentile(q_vals,10):.2f}  "
+             f"P50={np.percentile(q_vals,50):.2f}  P90={np.percentile(q_vals,90):.2f}  "
+             f"max={q_vals.max():.2f}")
+    log.info(f"  NOTE: These are per-transition Q(s,a) values; effective horizon ~"
+             f"{int(1/(1-CFG_S1['gamma']))} steps; expected range ≈ "
+             f"mean_reward/(1-γ) ≈ ${5.95/(1-CFG_S1['gamma']):.0f}")
 
     # Check 1: No NaN
     if np.isnan(q_vals).any():
@@ -207,38 +215,39 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
     else:
         log.info(f"[SMOKE Stage1 C2] Q_mean={q_vals.mean():.2f} > 0 — OK")
 
-    # Check 3: P90 > single-day MILP revenue floor ($590 = $116,669 / 68 CT days × ~0.34)
-    # Using $200 as conservative floor (some days have very low revenue)
+    # Check 3: per-transition Q P90 > $200.
+    # These are per-transition Q-values from the critic, NOT relabeled RTG values.
+    # Expected scale: mean_reward/(1-γ) ≈ $595 for this dataset. $200 ≈ 1/3 of that,
+    # a floor that flags badly undercalibrated critics. Actual P90 is informational.
     P90_FLOOR = 200.0
     q_p90 = float(np.percentile(q_vals, 90))
     if q_p90 < P90_FLOOR:
-        log.warning(f"[SMOKE FLAG Stage1 C3] Q P90={q_p90:.2f} < ${P90_FLOOR:.0f} floor — "
-                    f"RTG labels may be too low for DT to condition on meaningful returns.")
+        log.warning(f"[SMOKE FLAG Stage1 C3] per-transition Q P90={q_p90:.2f} < ${P90_FLOOR:.0f} — "
+                    f"critic undercalibrated; RTG labels will produce a low TARGET_RTG for DT.")
     else:
-        log.info(f"[SMOKE Stage1 C3] Q P90={q_p90:.2f} ≥ ${P90_FLOOR:.0f} floor — OK")
+        log.info(f"[SMOKE Stage1 C3] per-transaction Q P90={q_p90:.2f} ≥ ${P90_FLOOR:.0f} — OK")
 
-    # Check 4: CQL penalty positive AND in-range relative to Bellman loss
+    # Check 4: CQL penalty positive AND in-range relative to Bellman loss (informational).
+    # Positive CQL confirms conservatism direction: Q(s, a_rand) < Q(s, a_dataset).
+    # Ratio near 0.01× → CQL barely engaged; ratio >10× → CQL dominating.
+    # α=1.0 (paper default) may need tuning on 15k-transition dataset.
     if cql_val <= 0:
         log.error(f"[SMOKE FAIL Stage1 C4] CQL penalty={cql_val:.4f} ≤ 0 — "
-                  f"conservatism direction inverted. Dataset actions are NOT getting "
-                  f"higher Q than random actions.")
-    elif cql_val > td_val * 10:
-        log.warning(f"[SMOKE FLAG Stage1 C4] CQL={cql_val:.4f} >> TD={td_val:.4f} (>{10}×) — "
-                    f"CQL penalty dominating. Consider reducing alpha_cql.")
-    elif cql_val < td_val * 0.01:
-        log.warning(f"[SMOKE FLAG Stage1 C4] CQL={cql_val:.4f} << TD={td_val:.4f} (<0.01×) — "
-                    f"CQL barely engaged. alpha_cql may be too small or OOD actions too similar.")
+                  f"conservatism direction inverted. Dataset Q not higher than random Q.")
     else:
-        log.info(f"[SMOKE Stage1 C4] CQL={cql_val:.4f}  TD={td_val:.4f}  ratio={cql_val/td_val:.2f}× — OK")
+        ratio = cql_val / (td_val + 1e-8)
+        flag  = "OK" if 0.01 <= ratio <= 10.0 else ("FLAG-DOMINANT" if ratio > 10 else "FLAG-WEAK")
+        log.info(f"[SMOKE Stage1 C4] CQL={cql_val:.4f}  TD={td_val:.4f}  "
+                 f"ratio={ratio:.3f}× — {flag}  (informational; adjust α if needed)")
 
     # Check 5: Manual bootstrap spot-check (10 transitions)
-    # Log (a, next_act) pairs from the last batch to verify next_act is dataset action
+    # Verify next_act looks like actual dataset actions (not random, not shuffled).
     log.info("[SMOKE Stage1 C5] Bootstrap spot-check (last batch, 10 samples):")
     act_np      = act.detach().cpu().numpy()
     next_act_np = next_act.detach().cpu().numpy()
     s_done_np   = sarsa_done.detach().cpu().numpy().flatten()
     for k in range(min(10, len(act_np))):
-        log.info(f"  [{k}] act[0]={act_np[k,0]:.3f}  next_act[0]={next_act_np[k,0]:.3f}  "
+        log.info(f"  [{k}] act[0]={act_np[k,0]:.4f}  next_act[0]={next_act_np[k,0]:.4f}  "
                  f"sarsa_done={s_done_np[k]:.0f}")
 
     log.info("[SMOKE Stage1] DONE — review C3/C4 before Stage 1 full.")

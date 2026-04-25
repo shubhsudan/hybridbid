@@ -132,8 +132,13 @@ def relabel_rtg(npz_path: str, critic, device: torch.device,
             q1, q2 = critic(o, a)
             qtgt[start:end] = torch.min(q1, q2).squeeze(1).cpu().numpy()
 
-    print(f"[RTG relabel] Q-values: mean={qtgt.mean():.3f}  std={qtgt.std():.3f}  "
-          f"min={qtgt.min():.3f}  max={qtgt.max():.3f}")
+    print(f"[RTG relabel] Relabeled RTG (per-transition Q-values from CQL critic):")
+    print(f"  mean={qtgt.mean():.3f}  std={qtgt.std():.3f}  "
+          f"min={qtgt.min():.3f}  P10={np.percentile(qtgt,10):.3f}  "
+          f"P50={np.percentile(qtgt,50):.3f}  P90={np.percentile(qtgt,90):.3f}  "
+          f"max={qtgt.max():.3f}")
+    print(f"  NOTE: P90={np.percentile(qtgt,90):.2f} becomes TARGET_RTG at DT inference. "
+          f"Expected >$200 for a calibrated critic on this dataset.")
     return qtgt
 
 
