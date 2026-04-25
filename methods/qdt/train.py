@@ -130,11 +130,12 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
 
         # ── TD target ─────────────────────────────────────────────────────
         with torch.no_grad():
-            # Use random actions from valid p.u. range for target (behavior cloning target)
-            a_next = torch.cat([
-                torch.rand(act.shape[0], 1, device=device) * 2 - 1,   # p_energy [-1,1]
-                torch.rand(act.shape[0], 5, device=device),             # c_as [0,1]
-            ], dim=1)
+            # Use shuffled dataset actions for next-state bootstrap (not random OOD actions).
+            # Random actions are mostly OOD → conservative Q gives pessimistic targets →
+            # Q_mean drifts negative → negative RTG labels that break DT inference.
+            # Shuffled batch actions stay in the data distribution while breaking correlation.
+            idx_shuffle = torch.randperm(act.shape[0], device=device)
+            a_next = act[idx_shuffle].detach()
             q_tgt = rew + CFG_S1["gamma"] * (1.0 - done) * model.q_min_target(next_obs, a_next)
 
         # ── Bellman loss ──────────────────────────────────────────────────
