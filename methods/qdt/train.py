@@ -46,7 +46,10 @@ CFG_S1 = dict(
     batch_size    = 256,
     gamma         = 0.99,
     tau           = 0.005,
-    alpha_cql     = 1.0,      # CQL conservatism weight (paper default, medium-replay)
+    alpha_cql     = 0.3,      # Reduced from 1.0 (D4RL default) for small-data regime (~15k vs ~1M).
+                              # α=1.0 caused Q_mean collapse from 151→4.69 over 50k steps and
+                              # P50 RTG → -$140 (training-vs-inference RTG shift). 3× reduction
+                              # is a conservative first step; 0.1 would be aggressive without citation.
     n_rand_actions = 10,      # Number of random actions sampled for CQL penalty
     log_every     = 500,
     smoke_steps   = 5_000,
@@ -286,6 +289,30 @@ def run_stage2(gpu: int, train_path: str, critic_ckpt: str, out_path: str):
     rtg_values = relabel_rtg(train_path, model, device)
     save_relabeled(train_path, rtg_values, out_path)
     log.info(f"Stage 2 complete. Relabeled dataset at: {out_path}")
+
+    # ── Hard gate: RTG distribution check ─────────────────────────────────────
+    # Gate criteria (from sprint review):
+    #   PASS: P50 RTG ∈ [-$50, $100] AND P90 > $200
+    #   FAIL: P50 substantially negative (< -$50) or P90 < $200
+    # On FAIL: do NOT proceed to Stage 3. Document as small-data CQL failure.
+    p50 = float(np.percentile(rtg_values, 50))
+    p90 = float(np.percentile(rtg_values, 90))
+    gate_p50_ok = -50.0 <= p50 <= 100.0
+    gate_p90_ok = p90 >= 200.0
+    if gate_p50_ok and gate_p90_ok:
+        log.info(f"[STAGE2 GATE PASS] P50={p50:.2f} ∈ [-50, 100]  P90={p90:.2f} ≥ 200 — "
+                 f"proceed to Stage 3.")
+    else:
+        reasons = []
+        if not gate_p50_ok:
+            reasons.append(f"P50={p50:.2f} outside [-50, 100]")
+        if not gate_p90_ok:
+            reasons.append(f"P90={p90:.2f} < 200")
+        log.error(f"[STAGE2 GATE FAIL] {'; '.join(reasons)}. "
+                  f"RTG distribution shift: CQL critic over-conservative on small dataset. "
+                  f"Do NOT launch Stage 3. Write CLOSEOUT.md for QDT.")
+        sys.exit(1)
+
     return rtg_values
 
 
