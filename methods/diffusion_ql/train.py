@@ -50,8 +50,15 @@ CFG = dict(
     eval_every  = 10_000,
     smoke_steps = 5_000,
     full_steps  = 100_000,
-    checkpoint_step = 50_000,  # sys.exit here — Karthik reviews before continuing
+    # Sprint discipline: sys.exit at EACH checkpoint; Karthik decides whether to continue.
+    # 25k: Q-divergence check (flag if Q_max grew >4× vs smoke).
+    # 50k: mandatory mid-run review before final 100k.
+    checkpoint_steps = {25_000, 50_000},
 )
+
+# Q-growth thresholds at 25k checkpoint (vs smoke 5k: Q_mean=205, Q_max=8553)
+Q_MAX_SMOKE   = 8_553
+Q_MEAN_SMOKE  = 205
 
 # Smoke-pass thresholds
 SMOKE_MAX_AS_MEAN = 7.0     # MW: flag if mean AS bid > 7 MW per dimension
@@ -71,7 +78,7 @@ def build_infinite_loader(npz_path: str, batch_size: int):
 
 
 def train(mode: str, gpu: int, train_path: str, val_path: str,
-          data_dir: str, results_dir: str):
+          data_dir: str, results_dir: str, resume_ckpt: str = ""):
 
     device = torch.device(f"cuda:{gpu}" if torch.cuda.is_available() else "cpu")
     log.info(f"Device: {device}")
@@ -97,13 +104,22 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
         lr=CFG["lr"]
     )
 
+    start_step = 0
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        opt_policy.load_state_dict(ckpt["opt_policy"])
+        opt_critic.load_state_dict(ckpt["opt_critic"])
+        start_step = ckpt["step"]
+        log.info(f"Resumed from {resume_ckpt} at step {start_step}")
+
     data_iter = build_infinite_loader(train_path, CFG["batch_size"])
 
     # For smoke reward-statistics check
     reward_buf = []
 
     t0_total = time.time()
-    for step in range(1, n_steps + 1):
+    for step in range(start_step + 1, n_steps + 1):
 
         obs, act, rew, next_obs, done = next(data_iter)
         obs      = obs.to(device)
@@ -170,17 +186,31 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
         if step % CFG["eval_every"] == 0 or step == CFG["smoke_steps"]:
             _run_eval(model, device, step, data_dir, results_dir, mode)
 
-        # ── Sprint discipline checkpoint ─────────────────────────────────
-        if mode == "full" and step == CFG["checkpoint_step"]:
-            ckpt_path = ckpt_dir / f"dql_step{step}.pt"
+        # ── Sprint discipline checkpoints (25k and 50k) ─────────────────────
+        if mode == "full" and step in CFG["checkpoint_steps"]:
+            q_max_now  = q_pi.max().item()
+            q_mean_now = q_pi.mean().item()
+            ckpt_path  = ckpt_dir / f"dql_step{step}.pt"
             torch.save({
                 "step": step,
                 "model": model.state_dict(),
                 "opt_policy": opt_policy.state_dict(),
                 "opt_critic": opt_critic.state_dict(),
             }, ckpt_path)
+            _run_eval(model, device, step, data_dir, results_dir, mode)
             log.info(f"[CHECKPOINT] Step {step}: saved to {ckpt_path}")
-            log.info("[CHECKPOINT] Halting for Karthik's review. Re-launch to continue.")
+            log.info(f"[CHECKPOINT] Q_mean={q_mean_now:.1f}  Q_max={q_max_now:.1f}")
+            log.info(f"[CHECKPOINT] Reference (smoke 5k): Q_mean={Q_MEAN_SMOKE}  Q_max={Q_MAX_SMOKE}")
+            q_max_ratio = q_max_now / max(Q_MAX_SMOKE, 1)
+            if q_max_now > 50_000 or q_max_ratio > 4.0:
+                log.warning(f"[CHECKPOINT] Q_max={q_max_now:.0f} is >{q_max_ratio:.1f}× smoke value. "
+                            f"DIVERGENCE RISK — reduce beta_q to 0.5 and restart from this ckpt.")
+            elif q_max_now > 20_000 or q_max_ratio > 2.0:
+                log.warning(f"[CHECKPOINT] Q_max={q_max_now:.0f} is {q_max_ratio:.1f}× smoke value. "
+                            f"ELEVATED — consider reducing beta_q to 0.5 before 50k.")
+            else:
+                log.info(f"[CHECKPOINT] Q_max growth {q_max_ratio:.1f}× smoke — within spec.")
+            log.info("[CHECKPOINT] Halting for Karthik's review. Re-launch with --resume to continue.")
             sys.exit(0)
 
     # ── Smoke completion ─────────────────────────────────────────────────────
@@ -279,9 +309,10 @@ def main():
     ap.add_argument("--val-path",   default="data/expert_trajectories/receding_horizon_postbreak_val.npz")
     ap.add_argument("--data-dir",   default="data/processed")
     ap.add_argument("--results-dir", default="data/results")
+    ap.add_argument("--resume", default="", help="Path to checkpoint to resume from")
     args = ap.parse_args()
 
-    log.info(f"Diffusion-QL training: mode={args.mode}  gpu={args.gpu}")
+    log.info(f"Diffusion-QL training: mode={args.mode}  gpu={args.gpu}  resume={args.resume or 'none'}")
     log.info(f"Config: {CFG}")
 
     train(
@@ -291,6 +322,7 @@ def main():
         val_path=args.val_path,
         data_dir=args.data_dir,
         results_dir=args.results_dir,
+        resume_ckpt=args.resume,
     )
 
 
