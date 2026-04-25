@@ -96,11 +96,23 @@ def solve_daily_milp(
     try:
         prob.solve(solver="HIGHS", verbose=False, time_limit=DAILY_TIMEOUT)
     except Exception as exc:
-        return np.zeros((T, 6), dtype=np.float32), {"status": f"error:{exc}", "solve_time": time.time() - t0}
+        prob._status = f"error:{exc}"
     solve_time = time.time() - t0
 
+    # CLARABEL fallback: used when HiGHS reports unbounded or errors on extreme-price instances
+    # (matches the training MILP fallback pattern from src/data/postbreak_milp.py)
     if prob.status not in ("optimal", "optimal_inaccurate"):
-        return np.zeros((T, 6), dtype=np.float32), {"status": prob.status or "timeout", "solve_time": solve_time}
+        highs_status = prob.status
+        try:
+            prob.solve(solver="CLARABEL", verbose=False)
+        except Exception:
+            pass
+        if prob.status not in ("optimal", "optimal_inaccurate"):
+            return np.zeros((T, 6), dtype=np.float32), {
+                "status": f"highs:{highs_status}/clarabel:{prob.status}",
+                "solve_time": time.time() - t0,
+            }
+        solve_time = time.time() - t0
 
     def _v(var):
         arr = np.array(var.value, dtype=np.float64).flatten()
