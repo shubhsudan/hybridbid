@@ -45,20 +45,26 @@ CFG = dict(
     batch_size  = 256,
     gamma       = 0.99,
     tau         = 0.005,
-    beta_q      = 1.0,     # Q-maximization weight in policy loss (paper default)
+    beta_q      = 0.5,     # Reduced from 1.0: Q-divergence at step 29k-31k with β_Q=1.0
     log_every   = 500,
     eval_every  = 10_000,
     smoke_steps = 5_000,
     full_steps  = 100_000,
     # Sprint discipline: sys.exit at EACH checkpoint; Karthik decides whether to continue.
-    # 25k: Q-divergence check (flag if Q_max grew >4× vs smoke).
     # 50k: mandatory mid-run review before final 100k.
-    checkpoint_steps = {25_000, 50_000},
+    checkpoint_steps = {50_000},
 )
 
 # Q-growth thresholds at 25k checkpoint (vs smoke 5k: Q_mean=205, Q_max=8553)
 Q_MAX_SMOKE   = 8_553
 Q_MEAN_SMOKE  = 205
+
+# Early-monitoring reference: Q_max at the β_Q=1.0 → β_Q=0.5 restart point (step 25k).
+# If Q_max exceeds 4× this value within 10k steps of restart, β_Q=0.5 is insufficient
+# and training must be killed. Diffusion-QL becomes a documented failure case.
+Q_MAX_AT_RESTART   = 7_784   # Q_max from 25k checkpoint log
+EARLY_MONITOR_STEPS = 10_000  # window after resume start to watch for re-divergence
+EARLY_MONITOR_LIMIT = Q_MAX_AT_RESTART * 4  # = 31,136
 
 # Smoke-pass thresholds
 SMOKE_MAX_AS_MEAN = 7.0     # MW: flag if mean AS bid > 7 MW per dimension
@@ -174,13 +180,35 @@ def train(mode: str, gpu: int, train_path: str, val_path: str,
 
         # ── Logging ─────────────────────────────────────────────────────
         if step % CFG["log_every"] == 0:
-            q_val = q_pi.mean().item()
+            q_val     = q_pi.mean().item()
+            q_max_now = q_pi.max().item()
             log.info(
                 f"step={step:>7}  bc_loss={bc_loss.item():.4f}  "
                 f"critic_loss={critic_loss.item():.4f}  "
-                f"q_mean={q_val:.2f}  q_max={q_pi.max().item():.2f}  "
+                f"q_mean={q_val:.2f}  q_max={q_max_now:.2f}  "
                 f"q_min={q_pi.min().item():.2f}"
             )
+
+            # ── Early-divergence monitor (first EARLY_MONITOR_STEPS after resume) ──
+            # Fires every log_every (500) steps within the monitoring window.
+            # If Q_max exceeds 4× Q_max at the restart checkpoint, β_Q=0.5 is insufficient.
+            if mode == "full" and start_step > 0:
+                steps_since_resume = step - start_step
+                if steps_since_resume <= EARLY_MONITOR_STEPS:
+                    ratio_vs_restart = q_max_now / max(Q_MAX_AT_RESTART, 1)
+                    log.info(f"[EARLY-MONITOR] step={step} steps_since_resume={steps_since_resume} "
+                             f"Q_max={q_max_now:.0f}  vs_restart={ratio_vs_restart:.2f}×  "
+                             f"limit={EARLY_MONITOR_LIMIT:.0f} ({EARLY_MONITOR_STEPS}-step window)")
+                    if q_max_now > EARLY_MONITOR_LIMIT:
+                        log.error(f"[EARLY-MONITOR KILL] Q_max={q_max_now:.0f} > "
+                                  f"{ratio_vs_restart:.1f}× restart value ({EARLY_MONITOR_LIMIT:.0f}). "
+                                  f"β_Q=0.5 insufficient. Diffusion-QL → documented failure case. "
+                                  f"Killing training.")
+                        sys.exit(1)
+                elif steps_since_resume == EARLY_MONITOR_STEPS + CFG["log_every"]:
+                    log.info(f"[EARLY-MONITOR] {EARLY_MONITOR_STEPS}-step window passed. "
+                             f"Final Q_max={q_max_now:.0f}  ratio={q_max_now/max(Q_MAX_AT_RESTART,1):.2f}× — "
+                             f"monitoring window closed.")
 
         # ── Periodic eval ────────────────────────────────────────────────
         if step % CFG["eval_every"] == 0 or step == CFG["smoke_steps"]:
