@@ -93,6 +93,15 @@ class PostbreakDatasetCalQL(Dataset):
         dones are always 0 (no terminal states in continuous BESS operation).
     """
 
+    # Physical-$ baselines from CLAUDE.md (68 CT-day train, 62 CT-day val).
+    # Derived from MILP trajectory totals: train $116,669 / 19,584 intervals,
+    # val $76,525 / 17,856 intervals. Tolerance 1% per sprint spec.
+    _REWARD_BASELINES = {
+        19584: 116_669.0 / 19_584,   # train: $5.957/interval
+        17856:  76_525.0 / 17_856,   # val:   $4.285/interval
+    }
+    _REWARD_TOL = 0.01   # 1%
+
     def __init__(self, npz_path: str, v_behavior_cache: str = "",
                  gamma: float = 0.99):
         data    = np.load(npz_path, allow_pickle=False)
@@ -104,6 +113,24 @@ class PostbreakDatasetCalQL(Dataset):
         nsf  = data["next_static_features"] # (N, 14)
         acts = data["actions"].astype(np.float32)
         N    = len(acts)
+
+        # ── Reward recompute assertion (CLAUDE.md §SPRINT DISCIPLINE) ─────────
+        # Recomputed physical-$ mean must be within 1% of the cc-baselines
+        # physical-$ baseline. Fires on known splits (train 19584, val 17856).
+        recomp_mean = float(rewards.mean())
+        if N in self._REWARD_BASELINES:
+            baseline = self._REWARD_BASELINES[N]
+            pct_diff = abs(recomp_mean - baseline) / baseline
+            status   = "PASS" if pct_diff < self._REWARD_TOL else "FAIL"
+            print(f"  [REWARD ASSERT] recomputed={recomp_mean:.4f}  "
+                  f"baseline={baseline:.4f}  delta={pct_diff*100:.3f}%  [{status}]")
+            if status == "FAIL":
+                raise RuntimeError(
+                    f"Reward recompute assertion FAILED: recomp mean={recomp_mean:.4f}, "
+                    f"baseline={baseline:.4f}, delta={pct_diff*100:.2f}% > 1% tolerance. "
+                    f"Check reward_recompute.py or trajectory generation."
+                )
+        # ─────────────────────────────────────────────────────────────────────
 
         obs      = np.concatenate([ph.reshape(N, -1),  sf],  axis=1).astype(np.float32)
         next_obs = np.concatenate([nph.reshape(N, -1), nsf], axis=1).astype(np.float32)
