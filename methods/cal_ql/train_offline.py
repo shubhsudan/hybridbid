@@ -65,10 +65,34 @@ def build_agent(cfg: dict, device: torch.device) -> tuple:
     return actor, twin_q, twin_q_tgt, agent
 
 
+def _action_stats_for_mask(act_arr: np.ndarray, mask: np.ndarray,
+                            dim_names: list) -> dict:
+    """Per-dim action stats for a boolean mask over rows of act_arr."""
+    sub = act_arr[mask]
+    if len(sub) == 0:
+        return {}
+    stats = {}
+    for i, name in enumerate(dim_names):
+        col = sub[:, i]
+        stats[name] = {
+            "mean": float(col.mean()), "std": float(col.std()),
+            "p5": float(np.percentile(col, 5)), "p95": float(np.percentile(col, 95)),
+            "frac_zero": float((np.abs(col) < 1e-3).mean()),
+            "n": int(mask.sum()),
+        }
+    return stats
+
+
 def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
                 device: torch.device, step: int) -> dict:
     """
     Lightweight val-NPZ eval: Q statistics and action distribution.
+
+    Computes two action-distribution slices:
+      - Global (all val transitions)
+      - Negative-V_beh slice (val transitions where V_behavior < 0;
+        ~17% of train — QDT's failure zone without a calibration floor)
+
     NOT the full T-60 harness (Karthik runs that separately after 50k).
     """
     from methods.cal_ql.data_loader import PostbreakDatasetCalQL
@@ -82,21 +106,23 @@ def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
         bs = 512
         N  = len(val_ds)
         for start in range(0, N, bs):
-            end = min(start + bs, N)
-            # Grab obs batch directly (no DataLoader for eval)
+            end       = min(start + bs, N)
             obs_batch = val_ds.obs[start:end].to(device)
-            a_det     = actor.deterministic(obs_batch)          # (B, 6)
-            q_val     = twin_q.q_min(obs_batch, a_det)         # (B, 1)
+            a_det     = actor.deterministic(obs_batch)   # (B, 6)
+            q_val     = twin_q.q_min(obs_batch, a_det)  # (B, 1)
             all_q.append(q_val.cpu().numpy())
             all_act.append(a_det.cpu().numpy())
 
     actor.train()
     twin_q.train()
 
-    q_arr   = np.concatenate(all_q).squeeze()    # (N,)
-    act_arr = np.concatenate(all_act)             # (N, 6)
+    q_arr   = np.concatenate(all_q).squeeze()   # (N,)
+    act_arr = np.concatenate(all_act)            # (N, 6)
+    v_beh   = val_ds.v_beh.numpy()              # (N,)
 
     dim_names = ["p_energy", "c_regup", "c_regdn", "c_rrs", "c_ecrs", "c_nsrs"]
+
+    # Global action stats
     act_stats = {}
     for i, name in enumerate(dim_names):
         col = act_arr[:, i]
@@ -106,22 +132,34 @@ def eval_on_val(actor: Actor, twin_q: TwinQ, val_path: str,
             "frac_zero": float((np.abs(col) < 1e-3).mean()),
         }
 
+    # Negative-V_beh slice — states where calibration floor provides no protection
+    neg_mask = v_beh < 0.0
+    neg_act_stats = _action_stats_for_mask(act_arr, neg_mask, dim_names)
+
     result = {
-        "step": step,
-        "Q_mean": float(q_arr.mean()),
-        "Q_max":  float(q_arr.max()),
-        "Q_min":  float(q_arr.min()),
-        "Q_p50":  float(np.percentile(q_arr, 50)),
-        "Q_p90":  float(np.percentile(q_arr, 90)),
-        "action_stats": act_stats,
+        "step":    step,
+        "Q_mean":  float(q_arr.mean()),
+        "Q_max":   float(q_arr.max()),
+        "Q_min":   float(q_arr.min()),
+        "Q_p50":   float(np.percentile(q_arr, 50)),
+        "Q_p90":   float(np.percentile(q_arr, 90)),
+        "action_stats":     act_stats,
+        "neg_vbeh_stats":   neg_act_stats,
+        "neg_vbeh_n":       int(neg_mask.sum()),
+        "neg_vbeh_frac":    float(neg_mask.mean()),
     }
 
     log.info(f"[EVAL step={step}] Q_mean={result['Q_mean']:.2f}  Q_max={result['Q_max']:.2f}  "
              f"Q_min={result['Q_min']:.2f}  Q_p50={result['Q_p50']:.2f}")
-    log.info(f"[EVAL step={step}] Action distribution (p.u.):")
+    log.info(f"[EVAL step={step}] Global action distribution (p.u.):")
     for name, s in act_stats.items():
         log.info(f"  {name}: mean={s['mean']:.3f}  std={s['std']:.3f}  "
                  f"p5={s['p5']:.3f}  p95={s['p95']:.3f}  frac_zero={s['frac_zero']:.3f}")
+    log.info(f"[EVAL step={step}] Negative-V_beh slice ({result['neg_vbeh_n']} states, "
+             f"{result['neg_vbeh_frac']*100:.1f}% of val — no calibration floor):")
+    for name, s in neg_act_stats.items():
+        log.info(f"  {name}: mean={s['mean']:.3f}  std={s['std']:.3f}  "
+                 f"frac_zero={s['frac_zero']:.3f}")
 
     return result
 
@@ -346,7 +384,10 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
     """Write SMOKE_RESULTS.md for Karthik's review."""
     results_path = Path(ROOT) / "methods" / "cal_ql" / "SMOKE_RESULTS.md"
 
-    act_stats = eval_result.get("action_stats", {})
+    act_stats     = eval_result.get("action_stats", {})
+    neg_vbeh_stats = eval_result.get("neg_vbeh_stats", {})
+    neg_vbeh_n    = eval_result.get("neg_vbeh_n", 0)
+    neg_vbeh_frac = eval_result.get("neg_vbeh_frac", 0.0)
 
     # Pass/fail checks
     q_max  = eval_result["Q_max"]
@@ -369,6 +410,23 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
 
     smoke_pass = all([q_bounded, q_positive, cql_bounded, action_ok])
 
+    # ── Adaptive kill threshold recommendation (Karthik's guidance) ──────────
+    # V_beh max = $11,952. A correctly-learning Q must reach that range for Fern
+    # states. Q_max_smoke in $8–15k = spike states engaged; 4× is reasonable.
+    # Q_max_smoke < $3k = 4× would false-positive on legitimate Fern learning.
+    if q_max >= 8_000:
+        thresh_rec  = f"**4× = {q_max * 4:.0f}** (spike states engaged; 4× is a safe divergence signal)"
+        thresh_mode = "4x"
+    elif q_max >= 3_000:
+        thresh_rec  = (f"**4× = {q_max * 4:.0f}** (borderline — inspect 4× breach but also watch "
+                       f"absolute 50k threshold)")
+        thresh_mode = "4x_inspect"
+    else:
+        thresh_rec  = (f"**Absolute 50k** (4× = {q_max * 4:.0f} would false-positive on Fern states; "
+                       f"use 4× = {q_max * 4:.0f} as inspection-only, firm guard = $50,000)")
+        thresh_mode = "absolute_50k"
+    # ─────────────────────────────────────────────────────────────────────────
+
     lines = [
         "# Cal-QL Smoke Results",
         f"**Steps:** {cfg['smoke_steps']}",
@@ -377,31 +435,59 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
         f"**Smoke result:** {'PASS' if smoke_pass else 'FAIL'}",
         "",
         "## Smoke pass criteria",
-        f"| Criterion | Value | Status |",
-        f"|-----------|-------|--------|",
+        "| Criterion | Value | Status |",
+        "|-----------|-------|--------|",
         f"| Q_max bounded (<50k) | {q_max:.2f} | {'✓' if q_bounded else '✗ FAIL'} |",
         f"| Q_mean > 0 | {q_mean:.2f} | {'✓' if q_positive else '✗ FAIL'} |",
         f"| CQL term bounded | [{cql_range[0]:.2f}, {cql_range[1]:.2f}] | {'✓' if cql_bounded else '✗ FAIL'} |",
         f"| Action dist. non-degenerate | — | {'✓' if action_ok else '✗ FAIL'} |",
         "",
         "## Q-value statistics (val NPZ, deterministic policy)",
-        f"- Q_max_smoke: **{q_max:.2f}** ← kill threshold for full run = {cfg['kill_q_max_multiplier']}× = {q_max*cfg['kill_q_max_multiplier']:.2f}",
+        f"- **Q_max_smoke: {q_max:.2f}**",
         f"- Q_mean:  {q_mean:.2f}",
         f"- Q_min:   {eval_result['Q_min']:.2f}",
         f"- Q_p50:   {eval_result['Q_p50']:.2f}",
         f"- Q_p90:   {eval_result['Q_p90']:.2f}",
         "",
+        "## Kill threshold recommendation for 25k–50k run",
+        f"*(V_beh max = $11,952; correctly-learning Q must reach spike-state range)*",
+        f"- Q_max_smoke = **{q_max:.2f}**",
+        f"- Recommended kill guard: {thresh_rec}",
+        f"- Mode: `{thresh_mode}`",
+        (f"- To apply: update `kill_q_max_multiplier` in config.yaml (4×) or "
+         f"treat 50k absolute as hard guard and use 4× as alert-only."),
+        "",
         "## Calibration term (CQL term, last 500 steps avg)",
         f"- Mean: {cql:.3f}",
         f"- Range: [{cql_range[0]:.3f}, {cql_range[1]:.3f}]",
         "",
-        "## Action distribution (val NPZ, p.u.)",
+        "## Action distribution — global (val NPZ, p.u.)",
     ]
     for name, stats in act_stats.items():
         flag = action_flags.get(name, "?")
         lines.append(f"- **{name}** [{flag}]: mean={stats['mean']:.3f}  "
                      f"std={stats['std']:.3f}  p5={stats['p5']:.3f}  "
                      f"p95={stats['p95']:.3f}  frac_zero={stats['frac_zero']:.3f}")
+
+    # Negative-V_beh slice
+    lines += [
+        "",
+        f"## Action distribution — negative-V_beh slice ({neg_vbeh_n} states, "
+        f"{neg_vbeh_frac*100:.1f}% of val)",
+        "*(States with V_behavior < 0 — no calibration floor; QDT's failure zone in miniature)*",
+    ]
+    if neg_vbeh_stats:
+        global_means = {n: act_stats[n]["mean"] for n in act_stats}
+        for name, stats in neg_vbeh_stats.items():
+            g_mean = global_means.get(name, 0.0)
+            drift  = stats["mean"] - g_mean
+            flag   = "DRIFT" if abs(drift) > 0.15 else "ok"
+            lines.append(f"- **{name}** [{flag}]: mean={stats['mean']:.3f} "
+                         f"(global {g_mean:.3f}, drift={drift:+.3f})  "
+                         f"std={stats['std']:.3f}  frac_zero={stats['frac_zero']:.3f}")
+    else:
+        lines.append("*(no negative-V_beh states in val split)*")
+
     lines += [
         "",
         "## Training loss (last 500 steps avg)",
@@ -410,15 +496,15 @@ def _write_smoke_results(eval_result: dict, metric_buf: dict, cfg: dict,
         f"- Actor loss: {np.mean(metric_buf['actor_loss'][-500:]):.4f}",
         f"- log_pi: {np.mean(metric_buf['log_pi'][-500:]):.3f}",
         "",
-        f"## Checkpoint",
+        "## Checkpoint",
         f"- `{ckpt_path}`",
         "",
         "## Next step",
-        "Karthik reviews. If PASS, launch full run:",
+        "Karthik reviews. If PASS, set kill threshold per recommendation above, then:",
         "```",
-        "python -m methods.cal_ql.train_offline --mode full --gpu <N>",
+        "CUDA_VISIBLE_DEVICES=<gpu> python -m methods.cal_ql.train_offline --mode full --gpu 0",
         "```",
-        "Use `--resume checkpoints/sprint/cal_ql/calql_step25000.pt` after 25k checkpoint.",
+        "Halts at step 25k (sys.exit 0). Resume with `--resume checkpoints/sprint/cal_ql/calql_step25000.pt`.",
     ]
 
     with open(results_path, "w") as f:
