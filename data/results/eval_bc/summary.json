@@ -28,5 +28,7 @@
   "as_rev_total": 9861.48,
   "vs_pf_oracle": -53.8,
   "vs_milp_replay_ceiling": -50.1,
-  "vs_fleet_median": 17.0
+  "vs_fleet_median": 17.0,
+  "soc_ceiling_fraction": 0.3008,
+  "soc_floor_fraction": 0.1006
 }

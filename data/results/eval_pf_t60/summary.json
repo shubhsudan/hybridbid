@@ -1,0 +1,34 @@
+{
+  "method": "pf_t60",
+  "eval_date": "2026-04-25",
+  "all_days": {
+    "n_days": 54,
+    "total_revenue_usd": 93435.71,
+    "daily_avg_revenue": 1730.29,
+    "annualized_kw_yr": 63.1556
+  },
+  "ex_fern": {
+    "n_days": 53,
+    "total_revenue_usd": 89523.16,
+    "daily_avg_revenue": 1689.12,
+    "annualized_kw_yr": 61.6527
+  },
+  "fern_only": {
+    "n_days": 1,
+    "total_revenue_usd": 3912.54,
+    "annualized_kw_yr": 142.8078
+  },
+  "fleet": {
+    "median_kw_yr": 24.93,
+    "top_q_kw_yr": 32.23,
+    "vs_median_pct": 153.3,
+    "vs_top_q_pct": 96.0
+  },
+  "energy_rev_total": 76740.68,
+  "as_rev_total": 16695.03,
+  "vs_pf_oracle": 0.0,
+  "vs_milp_replay_ceiling": 8.1,
+  "vs_fleet_median": 153.3,
+  "soc_ceiling_fraction": 0.1626,
+  "soc_floor_fraction": 0.2305
+}

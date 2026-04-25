@@ -3,6 +3,7 @@ Eval utilities shared across all methods.
 
 Provides:
   - enrich_summary(): add vs_pf_oracle + vs_milp_replay_ceiling to summary.json
+  - add_soc_diagnostics(): add soc_ceiling_fraction / soc_floor_fraction from trajectory.parquet
   - run_fern_slice(): 7-day Fern-inclusive in-loop probe (Jan 23-29, SoC reset to 50%)
 
 These are the only eval-path utilities in the methods/ tree. They do not modify
@@ -18,6 +19,7 @@ from datetime import date
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -71,6 +73,32 @@ def enrich_summary_file(summary_path: str) -> dict:
     with open(summary_path) as f:
         summary = json.load(f)
     add_ceiling_metrics(summary)
+    with open(summary_path, "w") as f:
+        json.dump(summary, f, indent=2)
+    return summary
+
+
+def add_soc_diagnostics(summary_path: str, trajectory_path: str) -> dict:
+    """
+    Compute soc_ceiling_fraction and soc_floor_fraction from trajectory.parquet,
+    add them to summary.json, and re-write it.
+
+    Ceiling: SoC >= SOC_MAX - 0.5 MWh = 17.5 MWh  (near the 18 MWh hard cap)
+    Floor:   SoC <= SOC_MIN + 0.5 MWh = 2.5 MWh   (near the 2 MWh hard cap)
+
+    These diagnostics flag how much time a method spends against the SoC limits —
+    a proxy for covariate-shift severity (daily-reset training vs continuous-SoC eval).
+    """
+    traj = pd.read_parquet(trajectory_path)
+    soc  = traj["soc_mwh"].values
+    n    = len(soc)
+    ceiling_frac = float(np.mean(soc >= (SOC_MAX - 0.5)))   # >= 17.5 MWh
+    floor_frac   = float(np.mean(soc <= (SOC_MIN + 0.5)))   # <= 2.5 MWh
+
+    with open(summary_path) as f:
+        summary = json.load(f)
+    summary["soc_ceiling_fraction"] = round(ceiling_frac, 4)
+    summary["soc_floor_fraction"]   = round(floor_frac, 4)
     with open(summary_path, "w") as f:
         json.dump(summary, f, indent=2)
     return summary
