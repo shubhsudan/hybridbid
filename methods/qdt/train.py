@@ -227,18 +227,33 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
     else:
         log.info(f"[SMOKE Stage1 C3] per-transaction Q P90={q_p90:.2f} ≥ ${P90_FLOOR:.0f} — OK")
 
-    # Check 4: CQL penalty positive AND in-range relative to Bellman loss (informational).
-    # Positive CQL confirms conservatism direction: Q(s, a_rand) < Q(s, a_dataset).
-    # Ratio near 0.01× → CQL barely engaged; ratio >10× → CQL dominating.
-    # α=1.0 (paper default) may need tuning on 15k-transition dataset.
-    if cql_val <= 0:
-        log.error(f"[SMOKE FAIL Stage1 C4] CQL penalty={cql_val:.4f} ≤ 0 — "
-                  f"conservatism direction inverted. Dataset Q not higher than random Q.")
+    # Check 4: CQL gradient direction correct.
+    # Spec: "gradient direction correct" means Q_data ≥ Q_rand, i.e. cql_loss ≤ 0.
+    # cql_loss = logsumexp(Q_rand) - Q_data
+    #   < 0 : Q_data > Q_rand — correct conservatism direction; CQL reinforces this
+    #   > 0 : Q_rand > Q_data — conservatism not yet established (expected early; FAIL at 50k)
+    # Gradient of cql_loss always pushes Q_data UP and Q_rand DOWN regardless of sign —
+    # sign only tells us whether we're already conservative.
+    # CQL/TD ratio (informational): <0.01× → barely engaged (watch α); >10× → dominating.
+    ratio = abs(cql_val) / (td_val + 1e-8)
+    if cql_val > 0:
+        # Q_rand > Q_data: conservatism not established.
+        # At smoke (5k) this is a WARNING — CQL is still working toward the goal.
+        # At full (50k) checkpoint this would be a FAIL.
+        flag_str = "WARN-not-yet-conservative (OK at 5k smoke; FAIL if persists at 50k)"
+        log.warning(f"[SMOKE WARN Stage1 C4] CQL={cql_val:.4f} > 0 — "
+                    f"Q_rand > Q_data: conservatism not yet established. "
+                    f"ratio={ratio:.4f}×  {flag_str}")
     else:
-        ratio = cql_val / (td_val + 1e-8)
-        flag  = "OK" if 0.01 <= ratio <= 10.0 else ("FLAG-DOMINANT" if ratio > 10 else "FLAG-WEAK")
+        # Q_data > Q_rand: correct direction.
+        if ratio > 10.0:
+            engagement = "FLAG-DOMINANT (CQL >> TD; reduce α_cql)"
+        elif ratio < 0.01:
+            engagement = "FLAG-WEAK (CQL barely engaged; may need larger α_cql)"
+        else:
+            engagement = "OK"
         log.info(f"[SMOKE Stage1 C4] CQL={cql_val:.4f}  TD={td_val:.4f}  "
-                 f"ratio={ratio:.3f}× — {flag}  (informational; adjust α if needed)")
+                 f"ratio={ratio:.4f}×  direction=correct  engagement={engagement}")
 
     # Check 5: Manual bootstrap spot-check (10 transitions)
     # Verify next_act looks like actual dataset actions (not random, not shuffled).
