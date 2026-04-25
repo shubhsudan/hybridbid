@@ -1,103 +1,98 @@
-# QDT Smoke Report
+# QDT Smoke Report (v2 — in-sample SARSA fix)
 **Date:** 2026-04-25  
 **Machine:** Narnia GPU 16 (A16)  
-**Smoke steps:** Stage 1 = 5k, Stage 3 = 1k  
-**Smoke verdict:** BLOCKED — TD target bug requires fix before full training
+**Status:** Fix implemented, re-smoke required on Narnia
 
 ---
 
-## Stage 1: CQL Critic (5k steps)
+## Background: Two bootstrap fixes, one discarded
 
-| Metric | Value |
-|--------|-------|
-| Wall time | 67.7s (13.5ms/step) |
-| Final TD loss | oscillatory (range 1,010–12,825) |
-| Final CQL penalty | negative throughout |
-| Q_mean at 5k | -234 |
-| Q_max at 5k | 6,352 |
-| NaN in Q-values | No |
+### Smoke v1 (broken): random actions for TD bootstrap
+Original Stage 1 used `a_next = random_uniform(valid_range)`. CQL's conservatism is designed
+to depress Q-values on OOD actions. Using OOD actions for TD bootstrap guaranteed
+pessimistic targets → Q_mean = -234 → P90 RTG = -112.49 → DT conditioned on negative returns.
 
-**Issue:** CQL penalty was negative throughout, meaning dataset actions already receive lower Q
-than random actions — the opposite of the intended conservatism direction. This is a side
-effect of the TD target bug below (random actions → pessimistic targets → all Q-values
-depressed → CQL pushes in the wrong direction).
+### Fix attempt v1 (discarded): shuffled batch actions
+Proposed `a_next = act[torch.randperm(B)]`. Rejected: this computes `Q(s', a_from_s'')` where
+`s''` is unrelated to `s'`. Still OOD by a different distribution; would pass the negative-Q
+symptom check without being methodologically sound.
 
----
+### Fix v2 (current, committed): in-sample SARSA-style
+`a_next = dataset_actions[i+1]` — the actual recorded action at the next timestep.
 
-## Stage 2: RTG Relabeling
-
-| Metric | Value |
-|--------|-------|
-| Q mean | -277 |
-| Q std | (not captured) |
-| Q P90 | **-112.49** ← CRITICAL |
-| Wall time | ~1s |
-
-**CRITICAL FLAG:** P90 of Q-values is **negative (-112.49)**. This becomes `TARGET_RTG` at
-inference, meaning the DT will be conditioned on "achieve a return of -$112" every step.
-A policy conditioned on negative returns will learn to produce suboptimal (or adversarial)
-actions. Stage 3 DT training proceeded on top of these broken RTG labels.
+- No OOD risk by construction
+- Consistent with IQL / ReBRAC reference implementations for continuous offline RL
+- Cleanest implementation for small datasets (~15k transitions)
+- At CT-midnight boundaries: `sarsa_done=1.0` zeros the γ·Q(s', a') term (next action
+  belongs to a different episode after daily SoC reset)
+- This is the only place `truncateds` zeros the bootstrap; `done` flag for Q-learning
+  remains 0.0 throughout (no terminal states)
 
 ---
 
-## Stage 3: Decision Transformer (1k steps)
+## Implementation changes
 
-| Metric | Value |
-|--------|-------|
-| Initial DT loss | 0.077 |
-| Final DT loss | 0.049 |
-| NaN | No |
-| Wall time | ~30s for 1k steps |
+**`methods/qdt/data_loader.py` — `PostbreakDataset`:**
+- Now returns 7-tuple: `(obs, act, rew, next_obs, done, next_act, sarsa_done)`
+- `next_act[i] = actions[i+1]` for non-boundary; zero-padded at last index
+- `sarsa_done[i] = 1.0` at 68 CT-midnight truncated positions + final dataset index
 
-Loss decreasing cleanly — DT architecture is sound. However, the RTG sequences it trained on
-are contaminated by Stage 1's broken Q-values, so the Stage 3 smoke weights are not usable.
+**`methods/qdt/train.py` — `run_stage1()`:**
+- Unpacks 7-tuple from data iterator
+- TD target: `r + γ * (1 - sarsa_done) * Q_target(s', next_act)`
+- CQL penalty still uses random OOD actions (correct — conservatism penalty is supposed to
+  push down Q on OOD, separate from the bootstrap)
 
----
-
-## Root Cause: TD Target Bug in Stage 1
-
-**Location:** `methods/qdt/train.py`, `run_stage1()`, TD target block  
-**Bug:** Next-state bootstrap used random uniform actions in the valid p.u. range:
-```python
-# BUGGY (was):
-a_next = torch.cat([
-    torch.rand(act.shape[0], 1, device=device) * 2 - 1,  # p_energy [-1,1]
-    torch.rand(act.shape[0], 5, device=device),            # c_as [0,1]
-], dim=1)
+**Local sanity checks (M4):**
 ```
-Random actions are OOD from the ERCOT post-break data distribution. The CQL critic assigns
-pessimistic (low) Q-values to OOD actions. Using random actions for the TD bootstrap means
-the target `r + γ * Q(s', a_rand)` is systematically too low, pushing all Q-values negative.
-
-**Fix (committed):** Replace random actions with shuffled current-batch actions:
-```python
-# FIXED:
-idx_shuffle = torch.randperm(act.shape[0], device=device)
-a_next = act[idx_shuffle].detach()
+next_act[5][0] = act[6][0] = 1.0000  ✓ (in-sample pairing correct)
+sarsa_done[287] = 1.0  (last step of CT-day 1)  ✓
+sarsa_done[288] = 0.0  (first step of CT-day 2)  ✓
+sarsa_boundaries = 68  ✓ (one per CT training day)
 ```
-Shuffled batch actions break temporal correlation while staying in-distribution, giving
-well-calibrated TD targets. This is consistent with how CQL is implemented in standard
-offline RL libraries (d3rlpy, CORL).
 
 ---
 
-## Re-smoke Required
+## Strengthened smoke pass criteria for re-smoke
 
-Before launching Stage 1 full (50k steps), a clean 5k re-smoke on Narnia GPU 16 must confirm:
+Standard (from smoke v1):
+1. No NaN in Q-values
+2. Q_mean > 0
 
-1. Q_mean stays positive (expected >$100 given physical-$ rewards with mean ~$5/step × 288 steps/day)
-2. P90 of RTG labels after Stage 2 is positive
-3. CQL penalty is positive (random Q < dataset Q, confirming conservatism direction)
-4. TD loss converges within 5k (expect 2–4 decades of decrease)
+New (added):
+3. Q P90 > $200 (conservative floor for daily MILP revenue scale)
+4. CQL penalty > 0 AND in range [0.01×, 10×] of Bellman loss
+5. Bootstrap spot-check: 10 logged (act[k], next_act[k], sarsa_done[k]) pairs from last batch
 
-Estimated re-smoke time: ~70s for Stage 1 + ~1s Stage 2 + ~30s Stage 3 = <2 min total.
+All 5 checks are now embedded in `run_stage1()` smoke output.
 
 ---
 
-## Action Items (pending Karthik review)
+## Re-smoke to run on Narnia GPU 16
 
-- [x] Fix committed to `methods/qdt/train.py` on M4
-- [ ] Push fix to Narnia (git pull on Narnia)
-- [ ] Re-run 3-stage smoke on Narnia GPU 16 with fixed code
-- [ ] Report re-smoke Q distribution (confirm positive P90)
-- [ ] Karthik review of re-smoke before Stage 1 full (50k) launch
+```bash
+# On Narnia, after git pull:
+python -m methods.qdt.train --stage 1 --mode smoke --gpu 16 \
+  --train-path data/expert_trajectories/receding_horizon_postbreak_train.npz \
+  2>&1 | tee logs/sprint/qdt_s1_smoke_v2.log
+
+python -m methods.qdt.train --stage 2 --gpu 16 \
+  --train-path data/expert_trajectories/receding_horizon_postbreak_train.npz \
+  --relabeled-path methods/qdt/dataset_relabeled_v2.npz
+
+python -m methods.qdt.train --stage 3 --mode smoke --gpu 16 \
+  --relabeled-path methods/qdt/dataset_relabeled_v2.npz \
+  2>&1 | tee logs/sprint/qdt_s3_smoke_v2.log
+```
+
+Expected outcomes after fix:
+- Stage 1: Q_mean positive, P90 > $200, CQL penalty positive
+- Stage 2: P90 of RTG labels > $200
+- Stage 3: DT loss decreasing from ~0.07, no NaN
+
+---
+
+## Pending (stop gate)
+
+Results to be filled in after re-smoke completes. Do NOT launch Stage 1 full (50k) until
+Karthik has reviewed re-smoke results and explicitly approved.

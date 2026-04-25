@@ -121,22 +121,22 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
     t0        = time.time()
 
     for step in range(start_step + 1, n_steps + 1):
-        obs, act, rew, next_obs, done = next(data_iter)
-        obs      = obs.to(device)
-        act      = act.to(device)
-        rew      = rew.to(device).unsqueeze(1)
-        next_obs = next_obs.to(device)
-        done     = done.to(device).unsqueeze(1)
+        obs, act, rew, next_obs, done, next_act, sarsa_done = next(data_iter)
+        obs        = obs.to(device)
+        act        = act.to(device)
+        rew        = rew.to(device).unsqueeze(1)
+        next_obs   = next_obs.to(device)
+        done       = done.to(device).unsqueeze(1)        # always 0; no terminal states
+        next_act   = next_act.to(device)
+        sarsa_done = sarsa_done.to(device).unsqueeze(1)  # 1 at CT-midnight boundaries only
 
-        # ── TD target ─────────────────────────────────────────────────────
+        # ── TD target (in-sample SARSA-style bootstrap) ──────────────────
+        # Use the dataset's actual next action. This keeps the bootstrap in-distribution
+        # and avoids the OOD pessimism that random actions cause with a conservative critic.
+        # sarsa_done zeros the bootstrap at CT-midnight episode boundaries where
+        # next_act belongs to the following day's episode, not the current one.
         with torch.no_grad():
-            # Use shuffled dataset actions for next-state bootstrap (not random OOD actions).
-            # Random actions are mostly OOD → conservative Q gives pessimistic targets →
-            # Q_mean drifts negative → negative RTG labels that break DT inference.
-            # Shuffled batch actions stay in the data distribution while breaking correlation.
-            idx_shuffle = torch.randperm(act.shape[0], device=device)
-            a_next = act[idx_shuffle].detach()
-            q_tgt = rew + CFG_S1["gamma"] * (1.0 - done) * model.q_min_target(next_obs, a_next)
+            q_tgt = rew + CFG_S1["gamma"] * (1.0 - sarsa_done) * model.q_min_target(next_obs, next_act)
 
         # ── Bellman loss ──────────────────────────────────────────────────
         q1, q2 = model(obs, act)
@@ -184,16 +184,64 @@ def run_stage1(mode: str, gpu: int, train_path: str, data_dir: str,
                ckpt_path)
     log.info(f"Saved: {ckpt_path}")
 
-    # Smoke checks
-    q_vals = q1.detach().cpu().numpy().flatten()
-    log.info(f"[SMOKE CHECKS Stage1] Q distribution: mean={q_vals.mean():.2f}  "
-             f"std={q_vals.std():.2f}  min={q_vals.min():.2f}  max={q_vals.max():.2f}")
+    # ── Strengthened smoke checks ─────────────────────────────────────────────
+    q_vals   = q1.detach().cpu().numpy().flatten()
+    cql_val  = cql_loss.item()
+    td_val   = td_loss.item()
+
+    log.info(f"[SMOKE Stage1] Q distribution: mean={q_vals.mean():.2f}  "
+             f"std={q_vals.std():.2f}  min={q_vals.min():.2f}  max={q_vals.max():.2f}  "
+             f"P10={np.percentile(q_vals,10):.2f}  P50={np.percentile(q_vals,50):.2f}  "
+             f"P90={np.percentile(q_vals,90):.2f}")
+
+    # Check 1: No NaN
     if np.isnan(q_vals).any():
         log.error("[SMOKE FAIL] NaN in Q-values!")
-    elif q_vals.max() > 1_000_000:
-        log.warning("[SMOKE FLAG] Q_max > 1M — possible divergence")
     else:
-        log.info("[SMOKE Stage1] Q-values bounded — OK")
+        log.info("[SMOKE Stage1 C1] No NaN — OK")
+
+    # Check 2: Q_mean positive (>0)
+    if q_vals.mean() <= 0:
+        log.error(f"[SMOKE FAIL Stage1 C2] Q_mean={q_vals.mean():.2f} ≤ 0 — "
+                  f"TD bootstrap still pessimistic. Check in-sample a_next construction.")
+    else:
+        log.info(f"[SMOKE Stage1 C2] Q_mean={q_vals.mean():.2f} > 0 — OK")
+
+    # Check 3: P90 > single-day MILP revenue floor ($590 = $116,669 / 68 CT days × ~0.34)
+    # Using $200 as conservative floor (some days have very low revenue)
+    P90_FLOOR = 200.0
+    q_p90 = float(np.percentile(q_vals, 90))
+    if q_p90 < P90_FLOOR:
+        log.warning(f"[SMOKE FLAG Stage1 C3] Q P90={q_p90:.2f} < ${P90_FLOOR:.0f} floor — "
+                    f"RTG labels may be too low for DT to condition on meaningful returns.")
+    else:
+        log.info(f"[SMOKE Stage1 C3] Q P90={q_p90:.2f} ≥ ${P90_FLOOR:.0f} floor — OK")
+
+    # Check 4: CQL penalty positive AND in-range relative to Bellman loss
+    if cql_val <= 0:
+        log.error(f"[SMOKE FAIL Stage1 C4] CQL penalty={cql_val:.4f} ≤ 0 — "
+                  f"conservatism direction inverted. Dataset actions are NOT getting "
+                  f"higher Q than random actions.")
+    elif cql_val > td_val * 10:
+        log.warning(f"[SMOKE FLAG Stage1 C4] CQL={cql_val:.4f} >> TD={td_val:.4f} (>{10}×) — "
+                    f"CQL penalty dominating. Consider reducing alpha_cql.")
+    elif cql_val < td_val * 0.01:
+        log.warning(f"[SMOKE FLAG Stage1 C4] CQL={cql_val:.4f} << TD={td_val:.4f} (<0.01×) — "
+                    f"CQL barely engaged. alpha_cql may be too small or OOD actions too similar.")
+    else:
+        log.info(f"[SMOKE Stage1 C4] CQL={cql_val:.4f}  TD={td_val:.4f}  ratio={cql_val/td_val:.2f}× — OK")
+
+    # Check 5: Manual bootstrap spot-check (10 transitions)
+    # Log (a, next_act) pairs from the last batch to verify next_act is dataset action
+    log.info("[SMOKE Stage1 C5] Bootstrap spot-check (last batch, 10 samples):")
+    act_np      = act.detach().cpu().numpy()
+    next_act_np = next_act.detach().cpu().numpy()
+    s_done_np   = sarsa_done.detach().cpu().numpy().flatten()
+    for k in range(min(10, len(act_np))):
+        log.info(f"  [{k}] act[0]={act_np[k,0]:.3f}  next_act[0]={next_act_np[k,0]:.3f}  "
+                 f"sarsa_done={s_done_np[k]:.0f}")
+
+    log.info("[SMOKE Stage1] DONE — review C3/C4 before Stage 1 full.")
     return model
 
 

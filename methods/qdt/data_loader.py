@@ -42,8 +42,17 @@ def flatten_obs(price_history: np.ndarray, static_features: np.ndarray) -> np.nd
 
 class PostbreakDataset(Dataset):
     """
-    Flat (obs, act, rew, next_obs, done) transitions for CQL critic training.
+    Flat (obs, act, rew, next_obs, done, next_act, sarsa_done) transitions for CQL.
+
     Physical-$ rewards recomputed at load.
+
+    next_act / sarsa_done: in-sample SARSA bootstrap.
+      next_act[i]   = actions[i+1] for non-boundary transitions.
+      sarsa_done[i] = 1.0 at CT-midnight truncated boundaries and at the final transition;
+                      zeros the γ·Q(s', a') bootstrap term so it doesn't cross episode
+                      boundaries. This is the ONLY place truncated zeros the bootstrap —
+                      it applies only to the next-action lookup, not to the done flag for
+                      the current transition.
     """
 
     def __init__(self, npz_path: str):
@@ -54,23 +63,40 @@ class PostbreakDataset(Dataset):
         sf  = data["static_features"]
         nph = data["next_price_history"]
         nsf = data["next_static_features"]
+        acts = data["actions"].astype(np.float32)
 
         obs      = np.concatenate([ph.reshape(len(ph), -1), sf],   axis=1).astype(np.float32)
         next_obs = np.concatenate([nph.reshape(len(nph), -1), nsf], axis=1).astype(np.float32)
 
-        self.obs      = torch.from_numpy(obs)
-        self.act      = torch.from_numpy(data["actions"].astype(np.float32))
-        self.rew      = torch.from_numpy(rewards)
-        self.next_obs = torch.from_numpy(next_obs)
-        self.done     = torch.zeros(len(rewards), dtype=torch.float32)
+        N = len(acts)
 
-        self.n = len(rewards)
+        # next_act[i] = acts[i+1]; last row gets zeros (handled by sarsa_done)
+        next_act = np.empty_like(acts)
+        next_act[:-1] = acts[1:]
+        next_act[-1]  = np.zeros(ACT_DIM, dtype=np.float32)
+
+        # sarsa_done[i] = 1 at truncated boundaries and at the final step
+        trunc = data["truncateds"]  # bool (N,); True at last step of each CT-day episode
+        sarsa_done = trunc.astype(np.float32)
+        sarsa_done[-1] = 1.0  # last transition in dataset has no valid next_act
+
+        self.obs        = torch.from_numpy(obs)
+        self.act        = torch.from_numpy(acts)
+        self.rew        = torch.from_numpy(rewards)
+        self.next_obs   = torch.from_numpy(next_obs)
+        self.done       = torch.zeros(N, dtype=torch.float32)  # no terminal states
+        self.next_act   = torch.from_numpy(next_act)
+        self.sarsa_done = torch.from_numpy(sarsa_done)
+
+        self.n = N
         print(f"[PostbreakDataset/QDT] {self.n:,} transitions  "
-              f"rew mean={rewards.mean():.3f}  std={rewards.std():.3f}")
+              f"rew mean={rewards.mean():.3f}  std={rewards.std():.3f}  "
+              f"sarsa_boundaries={int(sarsa_done.sum())}")
 
     def __len__(self):  return self.n
     def __getitem__(self, i):
-        return (self.obs[i], self.act[i], self.rew[i], self.next_obs[i], self.done[i])
+        return (self.obs[i], self.act[i], self.rew[i], self.next_obs[i],
+                self.done[i], self.next_act[i], self.sarsa_done[i])
 
 
 def make_cql_loader(npz_path: str, batch_size: int = 256) -> DataLoader:
