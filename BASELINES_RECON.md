@@ -158,3 +158,62 @@ Phase 1 **cannot reuse** any of the existing baseline code as-is due to:
 ---
 
 **STOP: Awaiting Karthik's green-light for Phase 1.**
+
+---
+
+## Addendum: REWARD_CONVENTION.md Response (2026-04-25)
+
+Addressing cc-rl-narnia action items for cc-baselines. Reviewed `REWARD_CONVENTION.md` in full.
+
+### Item 2: BC training — reward field not used
+
+BC is not yet written. Design is locked: the data loader will load `(price_history, static_features, actions)` tuples only. Loss = `MSE(predicted_action, expert_action)`. The `rewards` field from the NPZ is not loaded, not passed to the loss, and not used in sampling weights.
+
+If training-time reward logging is needed for debugging, it will use `methods/_shared/reward_recompute.py` (not stored rewards). Alternatively: skip in-loop reward logging entirely and use the eval harness as the sole reward oracle. **That is the preferred approach** — avoids dual-path implementation and makes the harness the single source of truth.
+
+### Item 3: Phase 1 baseline revenue — physical $ confirmed
+
+TBx and PF are rule-based policies. They generate actions from prices (energy-based rules or MILP re-solve), then pass those actions to the eval harness. Revenue is computed by the harness at lines 329–330:
+
+```python
+energy_rev = p_energy * rt_lmp * DT          # physical MW × $/MWh × h
+as_rev = c_as * rt_mcpc * DT                 # physical MW × $/MWh × h
+```
+
+**The stored `rewards` field from the NPZ is never read by Phase 1 baselines code or by the eval harness.** Phase 1 baselines do not load the trajectory NPZ at all (TBx is purely rule-based; PF solves MILP from scratch). Revenue numbers from Phase 1 are fully independent of the stored-reward convention issue.
+
+### Item 4: $90,814 lineage — physical $ confirmed
+
+Traced the full chain in `experiments/diagnose_milp_gap.py`:
+
+| Number | Source | Computation path |
+|--------|--------|-----------------|
+| $96,169 | `diagnose_milp_gap.py:248` | `p_energy_planned * lmp * DT + dot(c_as_planned, mcpc) * DT` — physical MW × prices |
+| $90,814 | `prepare_postbreak.py:70` (comment) | Prior CT-aligned harness run — same physical formula |
+| $86,394 | `eval_milp_replay_ct/summary.json` | Harness `energy_rev + sum(as_rev)` — physical $ |
+
+**No path in this chain sums stored NPZ rewards.** The chain is exclusively: `actions_pu × P_MAX → MW → MW × price × DT → $`. The $90,814 is the prior CT-aligned validation target; $86,394 is the current (post-feasibility-projection) harness result. The −4.8% gap is the continuous-SoC + feasibility-clipping effect, confirmed by `MILP_REPLAY_GAP_VERIFIED.md`.
+
+### Item 5: Shared utility
+
+Will pull `methods/_shared/reward_recompute.py` once cc-rl-narnia commits it. Phase 1 doesn't need it (harness handles everything). Phase 2 (BC) will import it if any reward logging is added to training, but the preference is to skip in-loop reward logging.
+
+**Phase 1 and Phase 2 may proceed as soon as `methods/_shared/reward_recompute.py` is committed and Karthik green-lights.**
+
+### Item 6: CLAUDE.md path discrepancy
+
+Already documented in §4 above. Karthik to fix in CLAUDE.md. For all cc-baselines work, using `data/expert_trajectories/receding_horizon_postbreak_{train,val}.npz`.
+
+### Timeline impact
+
+| Phase | Impact |
+|-------|--------|
+| Phase 1 (TBx, PF) | **None.** Baselines don't touch stored rewards. |
+| Phase 2 (BC) | **Minimal.** Design constraint (no rewards in data loader) was already the plan. No rework needed. |
+| Phase 3 (MILP+forecaster) | **None.** Forecaster trains on prices; MILP re-solves at eval time. |
+
+No in-flight numbers to redo. Harness validation ($58.40/kW-yr) is clean.
+
+**Green-light conditions for cc-baselines:**
+1. `methods/_shared/reward_recompute.py` committed by cc-rl-narnia (pull when available)
+2. Karthik explicit green-light for Phase 1
