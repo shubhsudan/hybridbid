@@ -19,7 +19,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from experiments.prepare_postbreak import (
+from src.evaluation.eval_t60 import (
     load_data,
     _find_t60_indices,
     project_action,
