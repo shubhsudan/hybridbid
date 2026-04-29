@@ -9,8 +9,8 @@ processed_data.tar.gz
 # Training artifacts
 checkpoints/
 
-# Ad-hoc scripts
-scripts/
+# Ad-hoc scripts (root-level only)
+/scripts/
 
 # Environment
 .venv*/
@@ -38,3 +38,7 @@ build/
 
 # Gurobi
 gurobi.lic
+
+# Generated outputs
+logs/
+results/
