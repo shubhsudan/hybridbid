@@ -1,34 +1,44 @@
-# HybridBid - Week 1 Dependencies
-# Data access
-gridstatus>=0.34.0
+# HybridBid — Dependencies
+# Pinned to Narnia training environment (conda env hybridbid, April 2026)
+# For GPU training, install torch with CUDA: pip install torch==2.5.1+cu121 --index-url https://download.pytorch.org/whl/cu121
+# For CPU-only eval on M4: pip install torch>=2.5.0
+
+# Core ML
+torch>=2.5.0
+numpy>=2.0.0
+scipy>=1.17.0
+
+# Data
+pandas>=2.1.0
+pyarrow>=14.0.0
+duckdb>=1.5.0
+gridstatus>=0.35.0
 requests>=2.31.0
 
-# Data processing
-pandas>=2.1.0,<3.0
-numpy>=1.24.0
-pyarrow>=14.0.0
-duckdb>=0.9.0
+# Optimization (MILP baselines and trajectory generation)
+cvxpy>=1.8.0
+highspy>=1.13.0          # HiGHS open-source MILP solver
+clarabel>=0.11.0         # CLARABEL fallback for QP-stall edge cases
 
-# Optimization
-cvxpy>=1.4.0
-highspy>=1.5.0          # HiGHS solver (open-source, default)
-# gurobipy>=11.0.0      # Uncomment once academic license is installed
+# RL environment
+gymnasium>=1.2.0
 
 # Visualization
 matplotlib>=3.8.0
 seaborn>=0.13.0
+plotly>=5.0.0
 
-# Configuration
+# Utilities
 pyyaml>=6.0
+tqdm>=4.66.0
+python-dateutil>=2.8.0
+pytz>=2023.3
+tabulate>=0.9.0
+tensorboard>=2.15.0
 
 # Notebooks
 jupyter>=1.0.0
 ipykernel>=6.0.0
-
-# Utilities
-tqdm>=4.66.0
-python-dateutil>=2.8.0
-pytz>=2023.3
 
 # Testing
 pytest>=7.4.0
