@@ -2,12 +2,13 @@
 **Date:** April 25, 2026 (Day 2 of 7-day sprint)
 **Branch:** `sprint-offline-rl`
 **Status:** Day 1 complete. MILP trajectories generated, eval harness validated, gap explained.
+**Repo restructure:** completed on `repo-restructure` branch (Apr 29). `methods/` → `src/methods/`, `experiments/` → `src/evaluation/`, active checkpoints → `models/`. Paths in this file reflect the restructured layout.
 
 ---
 
 ## CRITICAL INSTRUCTIONS FOR CLAUDE CODE
 
-1. **This file governs the sprint branch only.** For HybridBid v5.1 work, see `CLAUDE_hybridbid_v51.md` on `main`.
+1. **This file governs the sprint branch only.** For HybridBid v5.1 work, see `archive/CLAUDE_hybridbid_v51.md` (moved off root during repo restructure).
 2. **Three sessions, three ownership domains.** Do not edit files outside your session's domain. See `## SESSION OWNERSHIP` below.
 3. **Stop and report on data quality gate failures.** Never silently work around bugs.
 4. **One variable per experiment.** If a method fails, replace it; don't pile on compensatory changes.
@@ -61,7 +62,7 @@ Build a demo-ready offline-RL system for ERCOT post-RTC+B BESS bidding. Compare 
 
 ### Battery
 - **10 MW / 20 MWh, 2h duration.** 
-- η_ch = η_dch = 0.95 (round-trip 0.9025). **Hardcode; do NOT read `configs/battery.yaml`** (stale 0.92 value).
+- η_ch = η_dch = 0.95 (round-trip 0.9025). **Hardcode in all sprint code.** `configs/battery.yaml` now matches (updated from stale 0.92 during repo restructure), but do not rely on it — the file is not read at runtime.
 - SoC limits: [0.1, 0.9] p.u. → [2.0, 18.0] MWh.
 
 ### MILP trajectory generation
@@ -83,7 +84,7 @@ Build a demo-ready offline-RL system for ERCOT post-RTC+B BESS bidding. Compare 
 - **Continuous SoC across 54-day eval window.** No midnight reset. This is the real deployment scenario.
 - **Three-way revenue split required**: `all_days`, `ex_fern`, `fern_only`.
 - **Method-agnostic interface:** `policy(obs) → np.ndarray (6,)`. Every method wraps its trained model in this.
-- Eval harness lives at `experiments/prepare_postbreak.py` (committed).
+- Eval harness lives at `src/evaluation/eval_t60.py` (was `experiments/prepare_postbreak.py`).
 - MILP-replay test is the canary: every method's eval should produce results that, when MILP actions are replayed through the harness, give $58.40/kW-yr ± 2%.
 
 ### What is NOT in this sprint
@@ -91,7 +92,7 @@ Build a demo-ready offline-RL system for ERCOT post-RTC+B BESS bidding. Compare 
 - IQL, RLPD (dropped)
 - DT, ReBRAC (dominated)
 - Deep methodological exploration beyond the 3 RL picks
-- Pre-break MILP UTC bug fix (deferred to `main`, files in audit `TIMEZONE_AUDIT.md`)
+- Pre-break MILP UTC bug fix (deferred to `main`, files in audit `archive/sprint_docs/TIMEZONE_AUDIT.md`)
 - Beating Li et al. reproduction (colleague's scope)
 
 ---
@@ -100,26 +101,26 @@ Build a demo-ready offline-RL system for ERCOT post-RTC+B BESS bidding. Compare 
 
 ### `cc-baselines` (M4)
 **Files owned:**
-- `experiments/prepare_postbreak.py` (eval harness)
-- `methods/milp_forecaster/` (Method 1)
-- `methods/bc/` (Method 2)
+- `src/evaluation/eval_t60.py` (eval harness; was `experiments/prepare_postbreak.py`)
+- `src/methods/milp_forecaster/` (Method 1)
+- `src/methods/bc/` (Method 2)
+- `src/methods/baselines/` (TBx, PF-MIP T-60 policies)
 - `data/results/eval_*` (all eval outputs)
-- Recomputed baselines: TBx, Perfect Foresight MIP on T-60 (joint 6D)
 - `data/processed/` (read-only access)
 
 ### `cc-rl-narnia` (Narnia)
 **Files owned:**
-- `methods/cal_ql/` (Method 3)
-- `methods/diffusion_ql/` (Method 4)
-- `methods/qdt/` (Method 5)
-- `checkpoints/sprint/` (all training artifacts)
+- `src/methods/cal_ql/` (Method 3)
+- `src/methods/diffusion_ql/` (Method 4)
+- `src/methods/qdt/` (Method 5)
+- `models/` (active training artifacts; was `checkpoints/sprint/`)
 - `logs/sprint/` (training logs)
 - `data/processed/` (read-only access)
 
 ### Shared (read-only for both sessions)
 - `src/env/ercot_env.py` (do NOT edit; fork or wrap if needed)
 - `src/data/postbreak_milp.py` (frozen; do not modify)
-- `data/processed/receding_horizon_postbreak_*_option_d.npz` (frozen trajectory files)
+- `data/expert_trajectories/receding_horizon_postbreak_*_option_d.npz` (frozen trajectory files)
 - This `CLAUDE.md`
 
 If a session needs to modify a shared file, stop and ask Karthik first.
