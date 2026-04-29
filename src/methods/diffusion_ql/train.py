@@ -29,8 +29,8 @@ import torch.nn.functional as F
 ROOT = str(Path(__file__).parent.parent.parent)
 sys.path.insert(0, ROOT)
 
-from methods.diffusion_ql.data_loader import PostbreakDataset, make_dataloader
-from methods.diffusion_ql.model import DiffusionQL, T_STEPS
+from src.methods.diffusion_ql.data_loader import PostbreakDataset, make_dataloader
+from src.methods.diffusion_ql.model import DiffusionQL, T_STEPS
 
 logging.basicConfig(
     level=logging.INFO,
@@ -258,7 +258,7 @@ def _run_eval(model, device, step, data_dir, results_dir, mode):
     """Run T-60 eval harness if data available; otherwise skip with warning."""
     try:
         sys.path.insert(0, ROOT)
-        from methods.diffusion_ql.policy import DiffusionQLPolicy
+        from src.methods.diffusion_ql.policy import DiffusionQLPolicy
         from experiments.prepare_postbreak import evaluate
         policy = DiffusionQLPolicy(model, device)
         result = evaluate(policy, f"dql_{mode}_step{step}",

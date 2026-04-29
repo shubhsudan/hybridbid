@@ -18,7 +18,7 @@ import sys
 ROOT = str(Path(__file__).parent.parent.parent)
 sys.path.insert(0, ROOT)
 
-from methods.cal_ql.networks import Actor
+from src.methods.cal_ql.networks import Actor
 
 P_MAX = 10.0   # MW; hardcoded per sprint spec (do NOT read configs/battery.yaml)
 

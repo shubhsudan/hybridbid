@@ -8,7 +8,7 @@ Maintains a sliding K=20 step context window over the 54-day continuous eval.
 import numpy as np
 import torch
 
-from methods.qdt.data_loader import K, OBS_DIM, ACT_DIM
+from src.methods.qdt.data_loader import K, OBS_DIM, ACT_DIM
 
 P_MAX = 10.0  # MW
 

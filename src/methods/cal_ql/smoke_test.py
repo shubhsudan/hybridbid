@@ -24,7 +24,7 @@ from pathlib import Path
 ROOT = str(Path(__file__).parent.parent.parent)
 sys.path.insert(0, ROOT)
 
-from methods.cal_ql.train_offline import train
+from src.methods.cal_ql.train_offline import train
 
 
 def main():

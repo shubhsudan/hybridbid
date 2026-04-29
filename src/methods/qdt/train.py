@@ -30,11 +30,11 @@ import torch.nn.functional as F
 ROOT = str(Path(__file__).parent.parent.parent)
 sys.path.insert(0, ROOT)
 
-from methods.qdt.data_loader import (
+from src.methods.qdt.data_loader import (
     PostbreakDataset, make_cql_loader, relabel_rtg, save_relabeled,
     SequenceDataset, make_sequence_loader, K, OBS_DIM, ACT_DIM
 )
-from methods.qdt.model import CQLCritic, DecisionTransformer
+from src.methods.qdt.model import CQLCritic, DecisionTransformer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     datefmt="%H:%M:%S")
@@ -414,7 +414,7 @@ def run_stage3(mode: str, gpu: int, relabeled_path: str, data_dir: str,
 def _eval_dt(model, device, step, data_dir, results_dir, mode, target_rtg):
     """Run T-60 eval harness with current DT policy."""
     try:
-        from methods.qdt.policy import QDTPolicy
+        from src.methods.qdt.policy import QDTPolicy
         from experiments.prepare_postbreak import evaluate
         policy = QDTPolicy(model, device, target_rtg)
         result = evaluate(policy, f"qdt_{mode}_step{step}",

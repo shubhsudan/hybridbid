@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from typing import Dict
 
-from methods.cal_ql.networks import Actor, TwinQ
+from src.methods.cal_ql.networks import Actor, TwinQ
 
 
 class CalQLAgent:

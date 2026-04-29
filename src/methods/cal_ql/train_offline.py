@@ -29,9 +29,9 @@ import yaml
 ROOT = str(Path(__file__).parent.parent.parent)
 sys.path.insert(0, ROOT)
 
-from methods.cal_ql.networks import Actor, TwinQ
-from methods.cal_ql.calql_agent import CalQLAgent
-from methods.cal_ql.data_loader import PostbreakDatasetCalQL, make_infinite_loader
+from src.methods.cal_ql.networks import Actor, TwinQ
+from src.methods.cal_ql.calql_agent import CalQLAgent
+from src.methods.cal_ql.data_loader import PostbreakDatasetCalQL, make_infinite_loader
 
 logging.basicConfig(
     level=logging.INFO,

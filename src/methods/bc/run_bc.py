@@ -26,11 +26,11 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from experiments.prepare_postbreak import evaluate
-from methods.bc.data_loader import load_datasets
-from methods.bc.model import BCNet
-from methods.bc.policy import BCPolicy
-from methods.bc.train import run_training
-from methods.eval_utils import (
+from src.methods.bc.data_loader import load_datasets
+from src.methods.bc.model import BCNet
+from src.methods.bc.policy import BCPolicy
+from src.methods.bc.train import run_training
+from src.methods.eval_utils import (
     add_ceiling_metrics,
     enrich_summary_file,
     prepare_fern_slice_data,
@@ -47,7 +47,7 @@ CKPT_DIR    = str(ROOT / "methods/bc/checkpoints")
 
 def make_fern_probe(net: BCNet, price_data, system_data, ts_ct, fern_start, fern_end, device):
     """Build the Fern slice probe callable for the training loop."""
-    from methods.bc.policy import BCPolicy as _BCPolicy
+    from src.methods.bc.policy import BCPolicy as _BCPolicy
 
     class _InlinePolicy:
         def __init__(self, n):

@@ -6,7 +6,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from methods._shared.reward_recompute import recompute_rewards, P_MAX, DT
+from src.methods._shared.reward_recompute import recompute_rewards, P_MAX, DT
 
 
 def _make_trajectory(actions, price_row):

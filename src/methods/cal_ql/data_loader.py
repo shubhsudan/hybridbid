@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-from methods._shared.reward_recompute import recompute_rewards
+from src.methods._shared.reward_recompute import recompute_rewards
 
 OBS_DIM = 32 * 12 + 14   # 398
 ACT_DIM = 6
