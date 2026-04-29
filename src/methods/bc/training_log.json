@@ -1,0 +1,250 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 9.159276,
+    "val_loss": 9.480723
+  },
+  {
+    "epoch": 2,
+    "train_loss": 8.464457,
+    "val_loss": 9.571681
+  },
+  {
+    "epoch": 3,
+    "train_loss": 8.237791,
+    "val_loss": 9.226794
+  },
+  {
+    "epoch": 4,
+    "train_loss": 7.900866,
+    "val_loss": 9.471743
+  },
+  {
+    "epoch": 5,
+    "train_loss": 7.735691,
+    "val_loss": 9.089455,
+    "probe": {
+      "p_energy": {
+        "mean": -0.653,
+        "std": 3.409,
+        "frac_zero": 0.04
+      },
+      "c_regup": {
+        "mean": 1.846,
+        "std": 2.373,
+        "frac_zero": 0.27
+      },
+      "c_regdn": {
+        "mean": 2.832,
+        "std": 2.365,
+        "frac_zero": 0.08
+      },
+      "c_rrs": {
+        "mean": 0.06,
+        "std": 0.083,
+        "frac_zero": 0.79
+      },
+      "c_ecrs": {
+        "mean": 0.122,
+        "std": 0.162,
+        "frac_zero": 0.63
+      },
+      "c_nsrs": {
+        "mean": 1.511,
+        "std": 1.511,
+        "frac_zero": 0.11
+      }
+    },
+    "fern_slice": {
+      "n_steps": 2016,
+      "total_revenue_usd": 12127.9,
+      "daily_avg_revenue": 1732.56,
+      "annualized_kw_yr": 63.2383,
+      "energy_rev_usd": 7849.79,
+      "as_rev_usd": 4278.11,
+      "fern_day_rev_usd": 4213.52,
+      "soc_final_mwh": 5.447
+    }
+  },
+  {
+    "epoch": 6,
+    "train_loss": 7.559159,
+    "val_loss": 9.221389
+  },
+  {
+    "epoch": 7,
+    "train_loss": 7.440577,
+    "val_loss": 9.197536
+  },
+  {
+    "epoch": 8,
+    "train_loss": 7.078842,
+    "val_loss": 9.169861
+  },
+  {
+    "epoch": 9,
+    "train_loss": 6.859641,
+    "val_loss": 9.366674
+  },
+  {
+    "epoch": 10,
+    "train_loss": 6.684356,
+    "val_loss": 8.820028,
+    "probe": {
+      "p_energy": {
+        "mean": -1.392,
+        "std": 4.032,
+        "frac_zero": 0.01
+      },
+      "c_regup": {
+        "mean": 2.096,
+        "std": 2.509,
+        "frac_zero": 0.17
+      },
+      "c_regdn": {
+        "mean": 2.091,
+        "std": 2.337,
+        "frac_zero": 0.18
+      },
+      "c_rrs": {
+        "mean": 0.059,
+        "std": 0.091,
+        "frac_zero": 0.8
+      },
+      "c_ecrs": {
+        "mean": 0.107,
+        "std": 0.198,
+        "frac_zero": 0.73
+      },
+      "c_nsrs": {
+        "mean": 1.409,
+        "std": 1.642,
+        "frac_zero": 0.17
+      }
+    }
+  },
+  {
+    "epoch": 11,
+    "train_loss": 6.44405,
+    "val_loss": 9.621443
+  },
+  {
+    "epoch": 12,
+    "train_loss": 6.277846,
+    "val_loss": 9.830934
+  },
+  {
+    "epoch": 13,
+    "train_loss": 5.979586,
+    "val_loss": 9.224221
+  },
+  {
+    "epoch": 14,
+    "train_loss": 5.929809,
+    "val_loss": 8.812015
+  },
+  {
+    "epoch": 15,
+    "train_loss": 5.651835,
+    "val_loss": 9.01682,
+    "probe": {
+      "p_energy": {
+        "mean": -0.592,
+        "std": 4.37,
+        "frac_zero": 0.01
+      },
+      "c_regup": {
+        "mean": 1.905,
+        "std": 2.281,
+        "frac_zero": 0.18
+      },
+      "c_regdn": {
+        "mean": 2.06,
+        "std": 2.553,
+        "frac_zero": 0.3
+      },
+      "c_rrs": {
+        "mean": 0.14,
+        "std": 0.241,
+        "frac_zero": 0.66
+      },
+      "c_ecrs": {
+        "mean": 0.177,
+        "std": 0.337,
+        "frac_zero": 0.66
+      },
+      "c_nsrs": {
+        "mean": 1.775,
+        "std": 2.126,
+        "frac_zero": 0.19
+      }
+    }
+  },
+  {
+    "epoch": 16,
+    "train_loss": 5.490992,
+    "val_loss": 8.905329
+  },
+  {
+    "epoch": 17,
+    "train_loss": 5.407982,
+    "val_loss": 8.645387
+  },
+  {
+    "epoch": 18,
+    "train_loss": 5.363627,
+    "val_loss": 9.600466
+  },
+  {
+    "epoch": 19,
+    "train_loss": 5.23873,
+    "val_loss": 8.758389
+  },
+  {
+    "epoch": 20,
+    "train_loss": 4.95305,
+    "val_loss": 8.78595,
+    "probe": {
+      "p_energy": {
+        "mean": -0.645,
+        "std": 4.644,
+        "frac_zero": 0.02
+      },
+      "c_regup": {
+        "mean": 2.293,
+        "std": 2.593,
+        "frac_zero": 0.2
+      },
+      "c_regdn": {
+        "mean": 2.102,
+        "std": 2.729,
+        "frac_zero": 0.4
+      },
+      "c_rrs": {
+        "mean": 0.105,
+        "std": 0.197,
+        "frac_zero": 0.74
+      },
+      "c_ecrs": {
+        "mean": 0.147,
+        "std": 0.308,
+        "frac_zero": 0.7
+      },
+      "c_nsrs": {
+        "mean": 1.25,
+        "std": 1.85,
+        "frac_zero": 0.27
+      }
+    }
+  },
+  {
+    "epoch": 21,
+    "train_loss": 4.938726,
+    "val_loss": 9.031769
+  },
+  {
+    "epoch": 22,
+    "train_loss": 4.811712,
+    "val_loss": 8.681374
+  }
+]

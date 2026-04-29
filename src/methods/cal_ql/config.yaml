@@ -1,0 +1,56 @@
+# Cal-QL offline phase hyperparameters
+# All values explicit — no hidden defaults.
+# Sprint: sprint-offline-rl, April 2026.
+
+# CQL conservatism — start at 0.3 (QDT lesson: D4RL default 1.0 causes over-conservatism
+# on 15k-transition spike-dominated data; 0.3 is the validated starting point)
+alpha_cql: 0.3
+
+# Discount
+gamma: 0.99
+
+# Target network Polyak averaging
+tau_polyak: 0.005
+
+# Learning rates — separate for actor and critic
+lr_actor:  0.0003
+lr_critic: 0.0003
+
+# Batch size
+batch_size: 256
+
+# Number of OOD actions sampled per state for CQL penalty
+# (n_random uniform + n_random from current policy = 2*n_random total)
+n_random_actions: 10
+
+# Actor entropy coefficient — 0.1: minimum to prevent log_std saturation (LOG_STD_MIN=-20).
+# Smoke round 1 with 0.0 caused complete mode collapse (log_pi=198, p_energy=1.000±0.000).
+# 0.1 is conservative relative to SAC default (0.2); CQL still provides primary regularization.
+alpha_entropy: 0.1
+
+# Training budget
+total_steps: 50000
+
+# Hard sys.exit(0) checkpoint — do NOT continue without Karthik's review
+checkpoint_step: 25000
+
+# Smoke-only budget (separate entry point)
+smoke_steps: 5000
+
+# Val-NPZ eval cadence during training (not full T-60 harness — lightweight)
+eval_every: 5000
+
+# Kill criteria for the 25k–50k continuation run
+# Applied at each eval_every checkpoint.
+kill_q_max_multiplier: 4.0   # Q_max > 4× Q_max_smoke → DQL-class divergence
+kill_q_mean_floor: 0.0        # Q_mean < 0 → QDT-class over-conservatism
+kill_cql_term_max: 50000.0    # |CQL term| > 50k → calibration mechanism broken
+
+# Data paths (relative to repo root — override via CLI args)
+train_npz: "data/expert_trajectories/receding_horizon_postbreak_train.npz"
+val_npz:   "data/expert_trajectories/receding_horizon_postbreak_val.npz"
+v_behavior_cache: "data/cal_ql/V_behavior.npy"
+
+# Battery constants — hardcoded, do NOT read configs/battery.yaml (stale 0.92 value)
+p_max_mw: 10.0
+eta:       0.95

@@ -1,0 +1,14 @@
+Post-break MILP trajectory — val
+==================================================
+n_days: 62
+n_transitions: 17856
+total_revenue_usd: 76525.36
+energy_revenue_usd: 62447.81
+as_revenue_usd: 14077.55
+daily_avg_total: 1234.28
+daily_avg_energy: 1007.22
+daily_avg_as: 227.06
+annualized_per_kw: 45.05
+n_solver_failures: 0
+mean_solve_s: 0.0922
+max_solve_s: 0.1266

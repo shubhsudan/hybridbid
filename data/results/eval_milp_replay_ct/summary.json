@@ -1,0 +1,31 @@
+{
+  "method": "milp_replay_ct",
+  "eval_date": "2026-04-24",
+  "all_days": {
+    "n_days": 54,
+    "total_revenue_usd": 86394.2,
+    "daily_avg_revenue": 1599.89,
+    "annualized_kw_yr": 58.3961
+  },
+  "ex_fern": {
+    "n_days": 53,
+    "total_revenue_usd": 82462.9,
+    "daily_avg_revenue": 1555.9,
+    "annualized_kw_yr": 56.7905
+  },
+  "fern_only": {
+    "n_days": 1,
+    "total_revenue_usd": 3931.29,
+    "annualized_kw_yr": 143.4922
+  },
+  "fleet": {
+    "median_kw_yr": 24.93,
+    "top_q_kw_yr": 32.23,
+    "vs_median_pct": 134.2,
+    "vs_top_q_pct": 81.2
+  },
+  "energy_rev_total": 71120.73,
+  "as_rev_total": 15273.47,
+  "soc_ceiling_fraction": 0.1157,
+  "soc_floor_fraction": 0.2125
+}

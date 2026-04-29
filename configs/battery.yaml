@@ -13,9 +13,9 @@ reference_battery:
   soc_max_frac: 0.90          # Maximum SoC = 18 MWh
   soc_initial_frac: 0.50      # Starting SoC for each simulation day
 
-  # Efficiency
-  eta_charge: 0.92            # Round-trip: 0.92 * 0.92 = 0.846
-  eta_discharge: 0.92
+  # Efficiency (η=0.95 per-leg; round-trip 0.9025; hardcoded in all sprint code)
+  eta_charge: 0.95
+  eta_discharge: 0.95
 
   # Degradation
   degradation_cost_per_mwh: 2.0   # $/MWh throughput (cycle cost)
