@@ -3,7 +3,7 @@
 Optimizes revenue for a 10 MW / 20 MWh battery storage system bidding in ERCOT's post-RTC+B co-optimized market (energy + 5 ancillary services, 5-minute SCED intervals). Compares offline RL methods against MILP-based baselines on a 54-day evaluation window (Jan 1 – Feb 23, 2026).
 
 **FOML Spring 2026 — Final Project**  
-Karthik Mattu (`km5503@g.rit.edu`), Vedant Singh Pundir (vp2364@rit.edu)
+Karthik Mattu (`km5503@g.rit.edu`), Vedant Singh Pundir (vp2364@rit.edu), Shubh Sudan (ss2401@rit.edu)
 
 ---
 
