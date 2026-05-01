@@ -5,8 +5,8 @@ This document records the use of AI tools for code generation, code architecture
 
 ## Tools Used
 
-- **Claude Code (CLI agent)** — code generation, refactoring, debugging assistance, repo restructuring.
-- **Claude.ai (web interface, Opus 4.x)** — code architecture decisions, root-cause diagnosis of training failures, methodology decisions that shaped code structure.
+- **Claude Code (CLI agent)** code generation, refactoring, debugging assistance, repo restructuring.
+- **Claude.ai (web interface, Opus 4.x)** code architecture decisions, root-cause diagnosis of training failures, methodology decisions that shaped code structure.
 
 ## Code Generation
 
